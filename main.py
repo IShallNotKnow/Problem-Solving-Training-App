@@ -97,9 +97,18 @@ class ImageFilter:
         exclude_types = {"logo", "icon", "banner", "header", "footer"}
 
         for image in images:
-            if image["content_type"] in exclude_types:
+            width = image["bbox"]["w"]
+            height = image["bbox"]["h"]
+            if image["content_type"] in exclude_types or height < 100 or width < 100:
                 continue
+
+            aspect_ratio = width/height
+            if aspect_ratio > 10 or aspect_ratio < 0.1:
+                return False
+
             filtered.append(image)
+        
+        return filtered
     
     async def semantic_filter(self, images: list, markdown: str) -> list:
         ...
@@ -142,11 +151,11 @@ async def main():
     processor = AsyncPDFProcessor()
     markdown, items, images = await processor.extract(pdf_bytes)
 
-    print("=== MARKDOWN ===")
-    #print(markdown)
+    imageFilter = ImageFilter()
+    filtered_images = await imageFilter.heuristic_filter(images)
+    print(len(images))
+    print(len(filtered_images))
 
-    print("\n=== IMAGES ===")
-    #print(images)
-    print(items)
+
 
 asyncio.run(main())

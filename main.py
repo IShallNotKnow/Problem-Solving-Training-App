@@ -1,16 +1,17 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client, Client
 from anthropic import Anthropic
-from pypdf import PdfReader
+from llama_cloud import AsyncLlamaCloud
+import tempfile
 from dotenv import load_dotenv
 import os
-import io
+from pathlib import Path
+import asyncio
+import aiofiles
 
 load_dotenv()
 
 app = FastAPI()
-supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,79 +20,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class Uploader:
+    ...
 
-client = Anthropic()
-
-async def get_current_user():
-    user = supabase.auth.get_user()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+class AsyncPDFProcessor:
+    def __init__(self):
+        self.client = AsyncLlamaCloud(
+            api_key=os.getenv("LLAMA_CLOUD_API_KEY")
         )
-    return user
 
-def extract_text_from_pdf(file_bytes: bytes, user=Depends(get_current_user)) -> str:
-    reader = PdfReader(io.BytesIO(file_bytes))
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() or ""
-    return text
 
-def generate_questions(content: str) -> str:
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=2048,
-        messages=[
+    async def extract(self, file_bytes: bytes):
+        uploaded = await self.client.files.create(
+            file=("document.pdf", file_bytes, "application/pdf"),
+            purpose="parse",
+        )
+
+        job = await self.client.parsing.parse(
+            file_id=uploaded.id,
+            tier="agentic",
+            version="latest",
+            expand=[
+                "markdown",
+                "items",
+                "images_content_metadata",
+            ],
+            output_options={
+                "images_to_save": ["layout", "embedded"]
+            },
+        )
+
+        markdown = getattr(job, "markdown", "") or ""
+
+        items = []
+        for pages in getattr(getattr(job, "items", None), "pages", []):
+            page_number = getattr(pages, "page_number", 0)
+            for item in getattr(pages, "items", []):
+                item_data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                item_data["page_number"] = page_number
+
+                bbox = item_data.get("bbox")
+                items.append({
+                    "type": item_data.get("type"),
+                    "level": item_data.get("level"),
+                    "value": item_data.get("value"),
+                    "md": item_data.get("md"),
+                    "page": page_number,
+                    "bbox": bbox.model_dump() if hasattr(bbox, "model_dump") else bbox,
+                    "grounding": item_data.get("grounding"),
+                })
+
+
+        images = [
             {
-                "role": "user",
-                "content": f"""You are a study assistant. Based on the following content, generate 10 study questions that test understanding of the key concepts and problem-solving skills through applied problems.
-
-Content:
-{content}
-
-Format each question clearly and numbered."""
+                "filename": img.filename,
+                "url": img.presigned_url,
+                "page": img.index,
+                "bbox": img.bbox.model_dump(),
+                "content_type": img.content_type,
+                "category": img.category,
             }
+            for img in job.images_content_metadata.images
         ]
-    )
-    return message.content[0].text
 
-@app.post("/testOutput")
-async def test(file: UploadFile):
-    file_bytes = await file.read()
-    content = extract_text_from_pdf(file_bytes)
-    return content
+        return markdown, items, images
 
-
-@app.post("/generate")
-async def generate(
-    file: UploadFile | None = File(default=None),
-    text: str | None = Form(default=None)
-):
-    if file:
-        file_bytes = await file.read()
-        content = extract_text_from_pdf(file_bytes)
-    elif text:
-        content = text
-    else:
-        return {"error": "Please provide a PDF or text"}
-
-    if not content.strip():
-        return {"error": "Could not extract any text from the file"}
+class ImageFilter:
+    def __init__(self):
+        ...
     
-    document = supabase.table("documents").insert({
-        "filename": file.filename if file else "pasted_text",
-        "extracted_text": content
-    }).execute()
-    
-    document_id = document.data[0]["id"]
+    async def heuristic_filter(self, images: list) -> list:
+        if not images:
+            return None
+        
+        filtered = []
+        exclude_types = {"logo", "icon", "banner", "header", "footer"}
 
-    questions = generate_questions(content)
+        for image in images:
+            if image["content_type"] in exclude_types:
+                continue
+            filtered.append(image)
     
-    supabase.table("questions").insert({
-        "document_id" : document_id,
-        "content" : questions
-    }).execute()
+    async def semantic_filter(self, images: list, markdown: str) -> list:
+        ...
 
-    return {"questions": questions}
+
+class ConceptExtractor:
+    ...
+
+class QuestionGenerator:
+    def __init__(self):
+        self.client = Anthropic()
+
+    async def generate_questions(self, content: str) -> str:
+        message = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""You are a study assistant. Based on the following content, 
+                    generate 10 study questions that test understanding of the key concepts and 
+                    problem-solving skills through applied problems.
+
+    Content:
+    {content}
+
+    Format each question clearly and numbered."""
+                }
+            ]
+        )
+        return message.content[0].text
+
+class QuestionValidator:
+    ...
+
+
+async def main():
+    pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()
+
+    processor = AsyncPDFProcessor()
+    markdown, items, images = await processor.extract(pdf_bytes)
+
+    print("=== MARKDOWN ===")
+    #print(markdown)
+
+    print("\n=== IMAGES ===")
+    #print(images)
+    print(items)
+
+asyncio.run(main())

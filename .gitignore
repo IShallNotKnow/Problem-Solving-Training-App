@@ -1,2 +1,6 @@
 .env
 __pycache__/
+venv/
+.venv/
+test_files/
+node_modules/

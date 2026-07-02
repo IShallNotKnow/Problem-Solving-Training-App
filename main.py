@@ -48,7 +48,7 @@ class AsyncPDFProcessor:
                 "images_content_metadata",
             ],
             output_options={
-                "images_to_save": ["layout", "embedded"]
+                "images_to_save": ["layout", "embedded"],
             },
         )
 
@@ -111,11 +111,13 @@ class ImageFilter:
         
         return filtered
     
-    async def semantic_filter(self, images: list, markdown: str) -> list:
+    async def semantic_filter(self, images: list, markdown: str) -> tuple[list[dict], dict[str, str]]:
         if not images:
             return []
 
         final_images = []
+        descriptions = {}
+
         async with httpx.AsyncClient() as http_client:
             for image in images:
                 try:
@@ -127,7 +129,7 @@ class ImageFilter:
 
                     result = self.client.messages.create(
                         model="claude-haiku-4-5-20251001",
-                        max_tokens=50,
+                        max_tokens=500,
                         temperature=0.0,
                         messages=[
                             {
@@ -143,27 +145,33 @@ class ImageFilter:
                                     },
                                     {
                                         "type": "text",
-                                        "text": f"""Does this image contain academically meaningful content 
-    such as a diagram, graph, mathematical figure, chart, or technical illustration 
-    directly relevant to a lecture? Reply with only YES or NO."""
+                                        "text": f"""Analyze these images from a lecture PDF.
+First line: YES if it contains academically meaningful content (diagram, graph, 
+mathematical figure, chart, technical illustration), NO if decorative or irrelevant.
+
+If YES, second line onward: describe the academic content concisely, including any 
+text, labels, or mathematical notation visible that may not appear in the lecture notes. 
+If NO, stop after the first line."""
                                     }
                                 ]
                             }
                         ]
                     )
 
-                    answer = result.content[0].text.strip().upper()
-                    if answer == "YES":
+                    response_text = result.content[0].text.strip()
+                    first_line = response_text.split("\n")[0].upper()
+
+                    if first_line == "YES":
                         final_images.append(image)
+
+                        if "\n" in response_text:
+                            descriptions[image["filename"]] = response_text.split("\n", 1)[1].strip()
 
                 except Exception as e:
                     print(f"Error filtering image {image.get('filename')}: {e}")
                     final_images.append(image)  # keep on error, better to include than lose
 
-        return final_images
-        ...
-        #implement a VLM to filter out images with little to no meaning or things already in markdown
-        # could use a small vlm to read images and ocr describing those images, then parsing and sending to larger llm
+        return final_images, descriptions
 
 
 class TextFilter:
@@ -229,24 +237,76 @@ class QuestionGenerator:
     def __init__(self):
         self.client = Anthropic()
 
-    async def generate_questions(self, content: str) -> str:
+    async def build_images(self, image: dict):
+        async with httpx.AsyncClient() as http_client:
+            try:
+                img_response = await http_client.get(image["url"])
+                if img_response.status_code != 200:
+                    return None
+
+                base64_image = base64.b64encode(img_response.content).decode("utf-8")
+
+                return {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.get("content_type", "image/png"),
+                        "data": base64_image
+                    }
+                },
+            
+            except Exception as e:
+                print(f"Error filtering image {image.get('filename')}: {e}")
+                return None
+
+
+    async def generate_questions(self, content: str, images: list, image_descriptions: dict) -> str:
+        message_content = [
+            {
+                "type": "text",
+                "text": f"""
+    You are a study assistant.
+
+    Based on the following content and images, generate 20 study questions
+    (10 MCQ, 10 FRQ) that test understanding of the key concepts and
+    problem-solving skills.
+
+    Content:
+    {content}
+
+    Image Descriptions:
+    """
+            }
+        ]
+
+        image_blocks = await asyncio.gather(
+            *(self.build_images(img) for img in images)
+        )
+
+        for i, (image, image_block) in enumerate(zip(images, image_blocks), start=1):
+            description = image_descriptions.get(image["filename"])
+            if image_block is not None:
+                message_content.append(image_block)
+
+            if description:
+                message_content.append(
+                    {
+                        "type": "text",
+                        "text": f"Image {i} description:\n{description}"
+                    }
+                )
+
         message = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
             messages=[
                 {
                     "role": "user",
-                    "content": f"""You are a study assistant. Based on the following content, 
-                    generate 10 study questions that test understanding of the key concepts and 
-                    problem-solving skills through applied problems.
-
-    Content:
-    {content}
-
-    Format each question clearly and numbered."""
+                    "content": message_content,
                 }
-            ]
+            ],
         )
+        
         return message.content[0].text
 
 class QuestionValidator:
@@ -264,7 +324,9 @@ class QuestionValidator:
             messages=[
                 {
                     "role": "user",
-                    "content": f""""""
+                    "content": f"""
+{questions}
+"""
                 }
             ]
         )
@@ -283,25 +345,25 @@ async def main():
     imageFilter = ImageFilter()
     filtered_images = await imageFilter.heuristic_filter(images)
 
-    print(len(images))
-    print(len(filtered_images))
-    print([image["url"] for image in filtered_images])
+    # print(len(images))
+    # print(len(filtered_images))
+    # print([image["url"] for image in filtered_images])
     
     textFilter = TextFilter()
     filtered_items = await textFilter.item_filter(items)
 
-    print(len(items))
-    print(len(filtered_items))
+    # print(len(items))
+    # print(len(filtered_items))
 
-    print([item for item in items if item not in filtered_items])
-    print([item for item in items if item.get("type") == "handwriting"])
+    # print([item for item in items if item not in filtered_items])
+    # print([item for item in items if item.get("type") == "handwriting"])
 
     conceptExtractor = ConceptExtractor()
     scored_pages = await conceptExtractor.score_pages(filtered_items)
     prompt_str = await conceptExtractor.prioritize_content(filtered_items, scored_pages)
 
-    print(scored_pages)
-    print(prompt_str)
+    # print(scored_pages)
+    # print(prompt_str)
 
 
 asyncio.run(main())

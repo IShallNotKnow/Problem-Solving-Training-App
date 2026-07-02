@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 import asyncio
+import httpx
+import base64
 import aiofiles
 
 load_dotenv()
@@ -88,6 +90,7 @@ class AsyncPDFProcessor:
 class ImageFilter:
     def __init__(self):
         self.exclude_types = {"logo", "icon", "banner", "header", "footer"}
+        self.client = Anthropic()
     
     async def heuristic_filter(self, images: list) -> list:
         if not images:
@@ -102,15 +105,65 @@ class ImageFilter:
 
             aspect_ratio = width/height
             if aspect_ratio > 10 or aspect_ratio < 0.1:
-                return False
+                continue
 
             filtered.append(image)
         
         return filtered
     
     async def semantic_filter(self, images: list, markdown: str) -> list:
+        if not images:
+            return []
+
+        final_images = []
+        async with httpx.AsyncClient() as http_client:
+            for image in images:
+                try:
+                    img_response = await http_client.get(image["url"])
+                    if img_response.status_code != 200:
+                        continue
+
+                    base64_image = base64.b64encode(img_response.content).decode("utf-8")
+
+                    result = self.client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=50,
+                        temperature=0.0,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": image.get("content_type", "image/png"),
+                                            "data": base64_image
+                                        }
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": f"""Does this image contain academically meaningful content 
+    such as a diagram, graph, mathematical figure, chart, or technical illustration 
+    directly relevant to a lecture? Reply with only YES or NO."""
+                                    }
+                                ]
+                            }
+                        ]
+                    )
+
+                    answer = result.content[0].text.strip().upper()
+                    if answer == "YES":
+                        final_images.append(image)
+
+                except Exception as e:
+                    print(f"Error filtering image {image.get('filename')}: {e}")
+                    final_images.append(image)  # keep on error, better to include than lose
+
+        return final_images
         ...
-        #implement an openai CLIP nn in the future for semantic filtering
+        #implement a VLM to filter out images with little to no meaning or things already in markdown
+        # could use a small vlm to read images and ocr describing those images, then parsing and sending to larger llm
 
 
 class TextFilter:
@@ -176,7 +229,7 @@ class QuestionGenerator:
     def __init__(self):
         self.client = Anthropic()
 
-    async def generate_questions(self, content: str, images: list) -> str:
+    async def generate_questions(self, content: str) -> str:
         message = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
@@ -197,11 +250,32 @@ class QuestionGenerator:
         return message.content[0].text
 
 class QuestionValidator:
-    ...
+    def __init__(self):
+        self.client = Anthropic()
+        self.questionGenerator = QuestionGenerator()
+    
+    async def validate_questions(self, questions: str):
+        if not questions:
+            return None
+        
+        message = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f""""""
+                }
+            ]
+        )
+
+        ...
+    
+
 
 
 async def main():
-    pdf_bytes = Path("test_files/class_notes_0420.pdf").read_bytes()
+    pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()
 
     processor = AsyncPDFProcessor()
     markdown, items, images = await processor.extract(pdf_bytes)
@@ -211,7 +285,7 @@ async def main():
 
     print(len(images))
     print(len(filtered_images))
-    print(filtered_images[0]["url"])
+    print([image["url"] for image in filtered_images])
     
     textFilter = TextFilter()
     filtered_items = await textFilter.item_filter(items)

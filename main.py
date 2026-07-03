@@ -236,6 +236,7 @@ class ConceptExtractor:
 class QuestionGenerator:
     def __init__(self):
         self.client = Anthropic()
+        self.questionValidator = QuestionValidator()
 
     async def build_images(self, image: dict):
         async with httpx.AsyncClient() as http_client:
@@ -268,7 +269,7 @@ class QuestionGenerator:
     You are a study assistant.
 
     Based on the following content and images, generate 20 study questions
-    (10 MCQ, 10 FRQ) that test understanding of the key concepts and
+    (10 MCQ, 10 FRQ, separated by ```) that test understanding of the key concepts and
     problem-solving skills.
 
     Content:
@@ -295,26 +296,42 @@ class QuestionGenerator:
                         "text": f"Image {i} description:\n{description}"
                     }
                 )
+            
+        approved = False
+        feedback = None
+        attempts = 0
+        MAX_RETRIES = 3
+        questions = ""
 
-        message = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2048,
-            messages=[
-                {
-                    "role": "user",
-                    "content": message_content,
-                }
-            ],
-        )
-        
-        return message.content[0].text
+        while not approved and attempts < MAX_RETRIES:
+            current_content = message_content.copy()
+            if feedback:
+                current_content.append({
+                    "type": "text",
+                    "text": f"Previous attempt was rejected. Improve based on this feedback:\n{feedback}"
+                })
+
+            message = self.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=2048,
+                messages=[{"role": "user", "content": current_content}]
+            )
+
+            questions = message.content[0].text
+            validation = await self.question_validator.validate_questions(questions, content)
+
+            approved = "yes" in validation.split("FEEDBACK:")[0].lower()
+            feedback = validation.split("FEEDBACK:")[1].strip() if "FEEDBACK:" in validation else None
+            attempts += 1
+
+        return questions
+
 
 class QuestionValidator:
     def __init__(self):
         self.client = Anthropic()
-        self.questionGenerator = QuestionGenerator()
     
-    async def validate_questions(self, questions: str):
+    async def validate_questions(self, questions: str, content: str):
         if not questions:
             return None
         
@@ -324,14 +341,28 @@ class QuestionValidator:
             messages=[
                 {
                     "role": "user",
-                    "content": f"""
+                    "content": f"""You are a study question validator. Evaluate the following questions against the provided content.
+
+For each question assess:
+- Relevance: is it directly testable from the content?
+- Depth: does it test understanding or problem-solving rather than simple recall?
+- Clarity: is it unambiguous and self-contained without needing the original slides?
+- Difficulty: is it appropriately challenging?
+
+Content:
+{content}
+
+Questions:
 {questions}
-"""
+
+Respond in this exact format:
+APPROVED: yes or no
+FEEDBACK: if not approved, list specific issues with each weak question and what to improve. If approved, write "none"."""
                 }
             ]
         )
 
-        ...
+        return message.content[0].text
     
 
 

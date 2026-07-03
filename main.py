@@ -10,6 +10,8 @@ import asyncio
 import httpx
 import base64
 import aiofiles
+from dataclasses import dataclass, field
+import json
 
 load_dotenv()
 
@@ -270,7 +272,8 @@ class QuestionGenerator:
 
     Based on the following content and images, generate 20 study questions
     (10 MCQ, 10 FRQ, separated by ```) that test understanding of the key concepts and
-    problem-solving skills.
+    problem-solving skills. Alongside this, provide answers (separated by ```) after the 
+    questions in the same structure.
 
     Content:
     {content}
@@ -317,15 +320,18 @@ class QuestionGenerator:
                 messages=[{"role": "user", "content": current_content}]
             )
 
-            questions = message.content[0].text
-            validation = await self.question_validator.validate_questions(questions, content)
+            response = message.content[0].text.split("```")
+            mcq = response[0]
+            frq = response[1]
+            mcq_answers = response[2]
+            frq_answers = response[3]
+            validation = await self.question_validator.validate_questions((mcq+frq), content)
 
             approved = "yes" in validation.split("FEEDBACK:")[0].lower()
             feedback = validation.split("FEEDBACK:")[1].strip() if "FEEDBACK:" in validation else None
             attempts += 1
 
-        return questions
-
+        return mcq, frq, mcq_answers, frq_answers
 
 class QuestionValidator:
     def __init__(self):
@@ -365,7 +371,147 @@ FEEDBACK: if not approved, list specific issues with each weak question and what
         return message.content[0].text
     
 
+from anthropic import Anthropic
+from dataclasses import dataclass, field
+import json
 
+
+VALIDATION_TOOL = {
+    "name": "submit_grading",
+    "description": "Submit graded results for each student response.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question_id": {"type": "string"},
+                        "score": {
+                            "type": "number",
+                            "description": "0.0 (fully wrong) to 1.0 (fully correct). Use partial credit for FRQs — e.g. correct approach with a minor arithmetic slip, or an equivalent but differently-named solution, should score 0.6-0.9, not 0."
+                        },
+                        "correct": {
+                            "type": "boolean",
+                            "description": "True only if score >= 0.85"
+                        },
+                        "feedback": {
+                            "type": "string",
+                            "description": "1-3 sentences, specific to what the student wrote. If wrong, explain why. If correct via a different valid path, acknowledge it."
+                        },
+                        "misconception": {
+                            "type": ["string", "null"],
+                            "description": "Short tag for a recurring error type if present (e.g. 'sign error', 'confused variance/std-dev'), else null."
+                        }
+                    },
+                    "required": ["question_id", "score", "correct", "feedback"]
+                }
+            }
+        },
+        "required": ["results"]
+    }
+}
+
+
+@dataclass
+class QuestionResult:
+    question_id: str
+    score: float
+    correct: bool
+    feedback: str
+    misconception: str | None = None
+
+
+@dataclass
+class ValidationResult:
+    results: list[QuestionResult]
+    avg_score: float = field(init=False)
+
+    def __post_init__(self):
+        self.avg_score = sum(r.score for r in self.results) / len(self.results) if self.results else 0.0
+
+    def suggested_difficulty_delta(self) -> int:
+        """Deterministic policy, not model-decided. Tune thresholds as you calibrate."""
+        if self.avg_score >= 0.85:
+            return +1
+        if self.avg_score <= 0.4:
+            return -1
+        return 0
+
+
+class AnswerValidator:
+    def __init__(self):
+        self.client = Anthropic()
+
+    async def validate_answers(
+        self,
+        responses: list[dict],   # [{"question_id": "q1", "response": "..."}, ...]
+        questions: list[dict],   # [{"question_id": "q1", "type": "FRQ", "prompt": "..."}, ...]
+        answer_key: list[dict],  # [{"question_id": "q1", "answer": "...", "rubric": "..."}, ...]
+    ) -> ValidationResult:
+
+        payload = {
+            "questions": questions,
+            "answer_key": answer_key,
+            "student_responses": responses,
+        }
+
+        message = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            tools=[VALIDATION_TOOL],
+            tool_choice={"type": "tool", "name": "submit_grading"},
+            messages=[{
+                "role": "user",
+                "content": f"""You are grading a student's answers against an answer key.
+
+For FRQs: grade for conceptual/procedural correctness, not exact string match.
+Different variable names, equivalent algebraic forms, or alternate valid solution
+paths should NOT be penalized. Only dock points for actual errors in reasoning,
+method, or final result.
+
+For MCQs: correct is binary (score 1.0 or 0.0) unless the question allows
+multi-select partial credit.
+
+Data:
+{json.dumps(payload, indent=2)}
+"""
+            }]
+        )
+
+        tool_use = next(b for b in message.content if b.type == "tool_use")
+        results = [QuestionResult(**r) for r in tool_use.input["results"]]
+        return ValidationResult(results=results)
+    
+
+
+class DifficultyController:
+    def update(self, state: SessionState, was_correct: bool) -> SessionState:
+        # deterministic staircase or Elo-style update
+        ...
+
+
+class SessionManager:
+    async def next_question(self, session_id: str):
+        state = self.store.load(session_id)
+        q = await self.generator.generate_one(
+            topic=state.topic, difficulty=state.difficulty,
+            avoid=state.recent_question_ids,
+        )
+        state.recent_question_ids.append(q.id)
+        self.store.save(session_id, state)
+        return q
+
+
+    async def submit_answer(self, session_id: str, question_id: str, answer: str):
+        state = self.store.load(session_id)
+        result = await self.validator.grade(question_id, answer)  # correct/incorrect + feedback
+        state = self.difficulty_ctrl.update(state, result.correct)
+        state.history.append(result)
+        self.store.save(session_id, state)
+        done = self.should_stop(state)  # count cap, mastery cap, etc.
+        return result, done
 
 async def main():
     pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()

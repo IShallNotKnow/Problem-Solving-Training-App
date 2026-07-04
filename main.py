@@ -24,6 +24,173 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@dataclass
+class QuestionResult:
+    question_id: str
+    score: float
+    correct: bool
+    feedback: str
+    misconception: str | None = None
+
+
+@dataclass
+class ValidationResult:
+    results: list[QuestionResult]
+    avg_score: float = field(init=False)
+
+    def __post_init__(self):
+        self.avg_score = sum(r.score for r in self.results) / len(self.results) if self.results else 0.0
+
+    def suggested_difficulty_delta(self) -> int:
+        if self.avg_score >= 0.85:
+            return +1
+        if self.avg_score <= 0.4:
+            return -1
+        return 0
+
+    
+QUESTION_GENERATION_TOOL = {
+    "name": "create_questions",
+    "description": "Submit a batch of generated study questions with answers and grading rubrics.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question_id": {
+                            "type": "string",
+                            "description": "Unique short id, e.g. 'q1', 'q2'."
+                        },
+                        "question_type": {
+                            "type": "string",
+                            "enum": ["MCQ", "FRQ"]
+                        },
+                        "difficulty": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "1 = recall/definition level, 5 = multi-step application requiring synthesis of several concepts."
+                        },
+                        "topic": {
+                            "type": "string",
+                            "description": "Short label for the specific concept being tested, e.g. 'chain rule', 'variance vs std deviation'. Used to target weak areas in later questions."
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "The question text shown to the student."
+                        },
+                        "choices": {
+                            "type": ["array", "null"],
+                            "items": {"type": "string"},
+                            "minItems": 3,
+                            "maxItems": 5,
+                            "description": "MCQ only. 3-5 answer options, plain text, no leading letters like 'A)'. Null for FRQ."
+                        },
+                        "correct_choice_index": {
+                            "type": ["integer", "null"],
+                            "description": "MCQ only. 0-based index into `choices` for the correct answer. Null for FRQ."
+                        },
+                        "correct_answer": {
+                            "type": "string",
+                            "description": "MCQ: the correct choice text (redundant with index, kept for readability). FRQ: a complete, ideal model answer."
+                        },
+                        "rubric_points": {
+                            "type": ["array", "null"],
+                            "items": {"type": "string"},
+                            "description": "FRQ only. 2-5 discrete, checkable points a correct answer must hit (not full sentences — short criteria, e.g. 'identifies the independent variable', 'correctly applies product rule'). Null for MCQ."
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "description": "1-2 sentences on why the correct answer is right, shown to the student after grading. For MCQ, briefly note why the main distractor(s) are tempting but wrong."
+                        }
+                    },
+                    "required": [
+                        "question_id", "question_type", "difficulty", "topic",
+                        "prompt", "correct_answer", "explanation"
+                    ],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["questions"],
+        "additionalProperties": False
+    }
+}
+
+QUESTION_VALIDATION_TOOL = {
+    "name": "validate_questions",
+    "description": "Review a batch of generated questions for correctness, difficulty accuracy, and quality, and flag any that need revision.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reviews": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question_id": {
+                            "type": "string",
+                            "description": "Must match a question_id from the submitted batch."
+                        },
+                        "approved": {
+                            "type": "boolean",
+                            "description": "True only if the question is correct, unambiguous, at its stated difficulty, and actually tests problem-solving/understanding rather than rote recall or trivia."
+                        },
+                        "feedback": {
+                            "type": ["string", "null"],
+                            "description": "Required if approved is false. Specific, actionable instructions on what to fix — e.g. 'distractor B is actually also correct', 'rubric point 2 doesn't match what the prompt asks', 'this is a memorization question, rephrase to require applying the concept'. Null if approved."
+                        }
+                    },
+                    "required": ["question_id", "approved", "feedback"],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["reviews"],
+        "additionalProperties": False
+    }
+}
+
+ANSWER_VALIDATION_TOOL = {
+    "name": "submit_grading",
+    "description": "Submit graded results for each student response.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question_id": {"type": "string"},
+                        "score": {
+                            "type": "number",
+                            "description": "0.0 (fully wrong) to 1.0 (fully correct). Use partial credit for FRQs — e.g. correct approach with a minor arithmetic slip, or an equivalent but differently-named solution, should score 0.6-0.9, not 0."
+                        },
+                        "correct": {
+                            "type": "boolean",
+                            "description": "True only if score >= 0.85"
+                        },
+                        "feedback": {
+                            "type": "string",
+                            "description": "1-3 sentences, specific to what the student wrote. If wrong, explain why. If correct via a different valid path, acknowledge it."
+                        },
+                        "misconception": {
+                            "type": ["string", "null"],
+                            "description": "Short tag for a recurring error type if present (e.g. 'sign error', 'confused variance/std-dev'), else null."
+                        }
+                    },
+                    "required": ["question_id", "score", "correct", "feedback"]
+                }
+            }
+        },
+        "required": ["results"]
+    }
+}
+
 class Uploader:
     ...
 
@@ -88,6 +255,7 @@ class AsyncPDFProcessor:
         ]
 
         return markdown, items, images
+
 
 class ImageFilter:
     def __init__(self):
@@ -188,6 +356,7 @@ class TextFilter:
 
         return [item for item in items if item["type"] in self.keep_types]
 
+
 class ConceptExtractor:
     def __init__(self):
         self.CONCEPT_SIGNALS = {
@@ -234,6 +403,7 @@ class ConceptExtractor:
                 result.append(f"{label} page {page}\n{page_text}")
 
         return "\n\n".join(result)
+
 
 class QuestionGenerator:
     def __init__(self):
@@ -317,21 +487,27 @@ class QuestionGenerator:
             message = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=2048,
+                tools=[QUESTION_GENERATION_TOOL],
+                tool_choice={"type": "tool", "name": "validate_questions"},
                 messages=[{"role": "user", "content": current_content}]
             )
 
-            response = message.content[0].text.split("```")
-            mcq = response[0]
-            frq = response[1]
-            mcq_answers = response[2]
-            frq_answers = response[3]
-            validation = await self.question_validator.validate_questions((mcq+frq), content)
+            tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+            text_block = next((b for b in message.content if b.type == "text"), None)
 
-            approved = "yes" in validation.split("FEEDBACK:")[0].lower()
-            feedback = validation.split("FEEDBACK:")[1].strip() if "FEEDBACK:" in validation else None
-            attempts += 1
+            questions = tool_use.input["questions"]
+            for q in questions:
+                validate_question_shape(q)
 
-        return mcq, frq, mcq_answers, frq_answers
+            # Only now do we run the validation *tool call* against an LLM
+            validation = await self.question_validator.validate_questions(questions, content)
+
+            return {
+                "status": "generated",
+                "questions": questions,
+                "validation": validation,
+            }
+
 
 class QuestionValidator:
     def __init__(self):
@@ -344,6 +520,8 @@ class QuestionValidator:
         message = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
+            tools=[QUESTION_GENERATION_TOOL],
+            tool_choice={"type": "tool", "name": "validate_questions"},
             messages=[
                 {
                     "role": "user",
@@ -369,75 +547,6 @@ FEEDBACK: if not approved, list specific issues with each weak question and what
         )
 
         return message.content[0].text
-    
-
-from anthropic import Anthropic
-from dataclasses import dataclass, field
-import json
-
-
-VALIDATION_TOOL = {
-    "name": "submit_grading",
-    "description": "Submit graded results for each student response.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "results": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question_id": {"type": "string"},
-                        "score": {
-                            "type": "number",
-                            "description": "0.0 (fully wrong) to 1.0 (fully correct). Use partial credit for FRQs — e.g. correct approach with a minor arithmetic slip, or an equivalent but differently-named solution, should score 0.6-0.9, not 0."
-                        },
-                        "correct": {
-                            "type": "boolean",
-                            "description": "True only if score >= 0.85"
-                        },
-                        "feedback": {
-                            "type": "string",
-                            "description": "1-3 sentences, specific to what the student wrote. If wrong, explain why. If correct via a different valid path, acknowledge it."
-                        },
-                        "misconception": {
-                            "type": ["string", "null"],
-                            "description": "Short tag for a recurring error type if present (e.g. 'sign error', 'confused variance/std-dev'), else null."
-                        }
-                    },
-                    "required": ["question_id", "score", "correct", "feedback"]
-                }
-            }
-        },
-        "required": ["results"]
-    }
-}
-
-
-@dataclass
-class QuestionResult:
-    question_id: str
-    score: float
-    correct: bool
-    feedback: str
-    misconception: str | None = None
-
-
-@dataclass
-class ValidationResult:
-    results: list[QuestionResult]
-    avg_score: float = field(init=False)
-
-    def __post_init__(self):
-        self.avg_score = sum(r.score for r in self.results) / len(self.results) if self.results else 0.0
-
-    def suggested_difficulty_delta(self) -> int:
-        """Deterministic policy, not model-decided. Tune thresholds as you calibrate."""
-        if self.avg_score >= 0.85:
-            return +1
-        if self.avg_score <= 0.4:
-            return -1
-        return 0
 
 
 class AnswerValidator:
@@ -460,7 +569,7 @@ class AnswerValidator:
         message = self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
-            tools=[VALIDATION_TOOL],
+            tools=[ANSWER_VALIDATION_TOOL],
             tool_choice={"type": "tool", "name": "submit_grading"},
             messages=[{
                 "role": "user",
@@ -483,35 +592,10 @@ Data:
         tool_use = next(b for b in message.content if b.type == "tool_use")
         results = [QuestionResult(**r) for r in tool_use.input["results"]]
         return ValidationResult(results=results)
-    
-
-
-class DifficultyController:
-    def update(self, state: SessionState, was_correct: bool) -> SessionState:
-        # deterministic staircase or Elo-style update
-        ...
 
 
 class SessionManager:
-    async def next_question(self, session_id: str):
-        state = self.store.load(session_id)
-        q = await self.generator.generate_one(
-            topic=state.topic, difficulty=state.difficulty,
-            avoid=state.recent_question_ids,
-        )
-        state.recent_question_ids.append(q.id)
-        self.store.save(session_id, state)
-        return q
-
-
-    async def submit_answer(self, session_id: str, question_id: str, answer: str):
-        state = self.store.load(session_id)
-        result = await self.validator.grade(question_id, answer)  # correct/incorrect + feedback
-        state = self.difficulty_ctrl.update(state, result.correct)
-        state.history.append(result)
-        self.store.save(session_id, state)
-        done = self.should_stop(state)  # count cap, mastery cap, etc.
-        return result, done
+    ...
 
 async def main():
     pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()

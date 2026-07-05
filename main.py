@@ -2,16 +2,16 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from anthropic import Anthropic
 from llama_cloud import AsyncLlamaCloud
-import tempfile
 from dotenv import load_dotenv
 import os
 from pathlib import Path
 import asyncio
 import httpx
 import base64
-import aiofiles
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 import json
+from typing import Literal
+from enum import Enum
 
 load_dotenv()
 
@@ -25,6 +25,37 @@ app.add_middleware(
 )
 
 @dataclass
+class Question:
+    question_id: str
+    question_type: Literal["MCQ", "FRQ"]
+    difficulty: int
+    topic: str
+    prompt: str
+    correct_answer: str
+    explanation: str
+    choices: list[str] | None = None
+    correct_choice_index: int | None = None
+    rubric_points: list[str] | None = None
+
+    def __post_init__(self):
+        if self.question_type == "MCQ":
+            if not self.choices or len(self.choices) < 3:
+                raise ValueError(f"{self.question_id}: MCQ requires >=3 choices")
+            if self.correct_choice_index is None or not (0 <= self.correct_choice_index < len(self.choices)):
+                raise ValueError(f"{self.question_id}: invalid correct_choice_index")
+        elif self.question_type == "FRQ":
+            if not self.rubric_points:
+                raise ValueError(f"{self.question_id}: FRQ requires rubric_points")
+            if self.choices:
+                raise ValueError(f"{self.question_id}: FRQ should not have choices")
+        else:
+            raise ValueError(f"{self.question_id}: Invalid question type")
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Question":
+        return cls(**d)
+
+@dataclass
 class QuestionResult:
     question_id: str
     score: float
@@ -34,7 +65,13 @@ class QuestionResult:
 
 
 @dataclass
-class ValidationResult:
+class QuestionValidationResult:
+    question_id: str
+    approved: bool
+    feedback: str = ""
+
+@dataclass
+class AnswerValidationResult:
     results: list[QuestionResult]
     avg_score: float = field(init=False)
 
@@ -48,9 +85,20 @@ class ValidationResult:
             return -1
         return 0
 
+class GenerationStatus(str, Enum):
+    GENERATED = "generated"
+    FAILED_VALIDATION = "failed_validation"
+
+@dataclass
+class GenerationResult:
+    status: GenerationStatus
+    questions: list[Question] = field(default_factory=list)
+    validation: list[QuestionValidationResult] = field(default_factory=list)
+    message: str = "" 
+
     
 QUESTION_GENERATION_TOOL = {
-    "name": "create_questions",
+    "name": "generate_questions",
     "description": "Submit a batch of generated study questions with answers and grading rubrics.",
     "input_schema": {
         "type": "object",
@@ -190,9 +238,6 @@ ANSWER_VALIDATION_TOOL = {
         "required": ["results"]
     }
 }
-
-class Uploader:
-    ...
 
 class AsyncPDFProcessor:
     def __init__(self):
@@ -425,15 +470,15 @@ class QuestionGenerator:
                         "type": "base64",
                         "media_type": image.get("content_type", "image/png"),
                         "data": base64_image
-                    }
-                },
+                    },
+                }
             
             except Exception as e:
                 print(f"Error filtering image {image.get('filename')}: {e}")
                 return None
 
 
-    async def generate_questions(self, content: str, images: list, image_descriptions: dict) -> str:
+    async def generate_questions(self, content: str, images: list, image_descriptions: dict) -> dict:
         message_content = [
             {
                 "type": "text",
@@ -448,7 +493,7 @@ class QuestionGenerator:
     Content:
     {content}
 
-    Image Descriptions:
+    Images:
     """
             }
         ]
@@ -471,82 +516,109 @@ class QuestionGenerator:
                 )
             
         approved = False
-        feedback = None
         attempts = 0
         MAX_RETRIES = 3
-        questions = ""
+        questions: list[Question] = []
+        validation: list[QuestionValidationResult] = []
+        feedback_history: list[tuple[str, str]] = []
 
         while not approved and attempts < MAX_RETRIES:
             current_content = message_content.copy()
-            if feedback:
+            if feedback_history:
+                feedback_str = "\n".join(f"Question {qid}: {fb}" for qid, fb in feedback_history)
                 current_content.append({
                     "type": "text",
-                    "text": f"Previous attempt was rejected. Improve based on this feedback:\n{feedback}"
+                    "text": f"Previous attempt was rejected. Fix these issues:\n{feedback_str}"
                 })
 
             message = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=2048,
                 tools=[QUESTION_GENERATION_TOOL],
-                tool_choice={"type": "tool", "name": "validate_questions"},
+                tool_choice={"type": "tool", "name": "create_questions"},
                 messages=[{"role": "user", "content": current_content}]
             )
 
             tool_use = next((b for b in message.content if b.type == "tool_use"), None)
-            text_block = next((b for b in message.content if b.type == "text"), None)
+            if tool_use is None:
+                # Shouldn't happen when forced, but don't let it crash silently either
+                raise RuntimeError("Model failed to return a tool call despite forced tool_choice")
 
-            questions = tool_use.input["questions"]
-            for q in questions:
-                validate_question_shape(q)
+            questions = [Question.from_dict(q) for q in tool_use.input["questions"]]
 
-            # Only now do we run the validation *tool call* against an LLM
-            validation = await self.question_validator.validate_questions(questions, content)
+            seen_ids = {q.question_id for q in questions}
+            if len(seen_ids) != len(questions):
+                raise ValueError("Duplicate question_id in generated batch")
 
-            return {
-                "status": "generated",
-                "questions": questions,
-                "validation": validation,
-            }
+            validation = await self.questionValidator.validate_questions(questions, content)
+            approved = all(review.approved for review in validation)
+            attempts += 1
+
+            if not approved:
+                feedback_history = [
+                    (review.question_id, review.feedback)
+                    for review in validation if not review.approved
+                ]
+
+        return GenerationResult(
+            status=GenerationStatus.GENERATED if approved else GenerationStatus.FAILED_VALIDATION,
+            questions=questions,
+            validation=validation,
+        )
 
 
 class QuestionValidator:
     def __init__(self):
         self.client = Anthropic()
     
-    async def validate_questions(self, questions: str, content: str):
+    async def validate_questions(self, questions: list[dict], content: str) -> list[QuestionValidationResult]:
         if not questions:
-            return None
+            return []
+        
+        payload = [asdict(q) for q in questions]
+        prompt_text = json.dumps(payload, indent=2)
         
         message = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2048,
-            tools=[QUESTION_GENERATION_TOOL],
-            tool_choice={"type": "tool", "name": "validate_questions"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""You are a study question validator. Evaluate the following questions against the provided content.
+        model="claude-haiku-4-5-20251001",
+        max_tokens=2048,
+        tools=[QUESTION_VALIDATION_TOOL],
+        tool_choice={"type": "tool", "name": "validate_questions"},
+        messages=[
+            {
+                "role": "user",
+                "content": f"""You are a study question validator. Evaluate the following questions against the source content.
 
 For each question assess:
+- Correctness: is `correct_answer` (and `rubric_points` for FRQ) actually correct given the content?
 - Relevance: is it directly testable from the content?
-- Depth: does it test understanding or problem-solving rather than simple recall?
-- Clarity: is it unambiguous and self-contained without needing the original slides?
-- Difficulty: is it appropriately challenging?
+- Depth: does it test understanding or problem-solving rather than rote recall?
+- Clarity: is it unambiguous and self-contained without needing the original material?
+- Difficulty accuracy: does the actual difficulty of the question match its stated `difficulty` (1-5)?
+- MCQ only: are `choices` plausible distractors, with exactly one clearly correct option at `correct_choice_index`?
+- FRQ only: do `rubric_points` fully and precisely capture what a correct answer must contain?
 
-Content:
+Source content:
 {content}
 
-Questions:
-{questions}
+Questions (full generated objects, including answers and rubrics):
+{prompt_text}
+"""
+            }
+        ]
+    )
 
-Respond in this exact format:
-APPROVED: yes or no
-FEEDBACK: if not approved, list specific issues with each weak question and what to improve. If approved, write "none"."""
-                }
-            ]
-        )
+        tool_use = next((b for b in message.content if b.type == "tool_use"), None)
+        if tool_use is None:
+            raise ValueError("Validator did not return a tool call.")
 
-        return message.content[0].text
+        return [
+            QuestionValidationResult(
+                question_id=entry["question_id"],
+                approved=entry["approved"],
+                feedback=entry["feedback"] or "",
+            )
+            for entry in tool_use.input["reviews"]
+        ]
 
 
 class AnswerValidator:
@@ -558,7 +630,7 @@ class AnswerValidator:
         responses: list[dict],   # [{"question_id": "q1", "response": "..."}, ...]
         questions: list[dict],   # [{"question_id": "q1", "type": "FRQ", "prompt": "..."}, ...]
         answer_key: list[dict],  # [{"question_id": "q1", "answer": "...", "rubric": "..."}, ...]
-    ) -> ValidationResult:
+    ) -> AnswerValidationResult:
 
         payload = {
             "questions": questions,
@@ -591,7 +663,35 @@ Data:
 
         tool_use = next(b for b in message.content if b.type == "tool_use")
         results = [QuestionResult(**r) for r in tool_use.input["results"]]
-        return ValidationResult(results=results)
+        return AnswerValidationResult(results=results)
+    
+class StudyChatAssistant:
+    """Handles clarifications, conversational asides, 'why do I need this' —
+    anything that isn't a generation request. No tools, plain text in/out."""
+    def __init__(self):
+        self.client = Anthropic()
+
+    async def respond(self, user_message: str, session_context: SessionContext) -> str:
+        message = self.client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": f"""You are a study assistant helping a student work through practice questions.
+
+Current question the student is looking at:
+{json.dumps(asdict(session_context.current_question), indent=2)}
+
+Recent conversation:
+{session_context.chat_history}
+
+Student's message: {user_message}
+
+Answer conversationally. If they're asking for a hint, guide them without giving
+away the full answer. If they're asking a concept question, explain clearly."""
+            }]
+        )
+        return next(b.text for b in message.content if b.type == "text")
 
 
 class SessionManager:

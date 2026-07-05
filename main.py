@@ -24,6 +24,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+"""
+@app.post("/sessions/{session_id}/generate")
+async def generate(session_id: str, req: GenerateRequest):
+    result = await question_generator.generate_questions(
+        req.content, req.images, req.image_descriptions
+    )
+    session_store.save_questions(session_id, result.questions)
+    return asdict_result(result)
+
+@app.post("/sessions/{session_id}/answer")
+async def submit_answer(session_id: str, req: AnswerRequest):
+    state = session_store.get(session_id)
+    result = await answer_validator.validate_answers([asdict(req)], state.questions)
+    state = difficulty_controller.update(state, result.results[0])
+    state.answered_question_ids.append(req.question_id)
+    state.advance()
+    session_store.save(session_id, state)
+
+    return {
+        "feedback": result.feedback,
+        "score": result.score,
+        "new_difficulty": state.difficulty,
+    }
+
+
+@app.post("/sessions/{session_id}/chat")
+async def chat(session_id: str, req: ChatRequest):
+    context = session_store.load_context(session_id)
+    reply = await study_chat.respond(req.message, context)
+    return {"reply": reply}
+"""
+
+class Difficulty(int, Enum):
+    ONE = 1
+    TWO = 2
+    THREE = 3
+    FOUR = 4
+    FIVE = 5
+
 @dataclass
 class Question:
     question_id: str
@@ -96,6 +135,39 @@ class GenerationResult:
     validation: list[QuestionValidationResult] = field(default_factory=list)
     message: str = "" 
 
+@dataclass
+class SessionState:
+    session_id: str
+    topic: str
+    questions: list[Question] = field(default_factory=list)   # the active batch
+    current_question_index: int = 0
+    difficulty: int = 3
+    consecutive_correct: int = 0
+    consecutive_incorrect: int = 0
+    answered_question_ids: list[str] = field(default_factory=list)
+    history: list[QuestionResult] = field(default_factory=list)
+    chat_history: list[dict] = field(default_factory=list)
+
+    @property
+    def current_question(self) -> Question | None:
+        if 0 <= self.current_question_index < len(self.questions):
+            return self.questions[self.current_question_index]
+        return None
+
+    def advance(self) -> None:
+        self.current_question_index += 1
+
+@dataclass
+class SessionContext:
+    current_question: Question | None
+    chat_history: list[dict]
+
+    @classmethod
+    def from_state(cls, state: SessionState) -> "SessionContext":
+        return cls(
+            current_question=state.current_question,
+            chat_history=state.chat_history[-10:],  # cap context sent to the model
+        )
     
 QUESTION_GENERATION_TOOL = {
     "name": "generate_questions",
@@ -571,12 +643,21 @@ class QuestionValidator:
     def __init__(self):
         self.client = Anthropic()
     
-    async def validate_questions(self, questions: list[dict], content: str) -> list[QuestionValidationResult]:
+    async def validate_questions(
+            self, questions: list[dict], 
+            content: str, 
+            image_descriptions: dict[str, str] | None = None
+        ) -> list[QuestionValidationResult]:
+
         if not questions:
             return []
         
-        payload = [asdict(q) for q in questions]
-        prompt_text = json.dumps(payload, indent=2)
+        descriptions_block = ""
+        if image_descriptions:
+            descriptions_block = "\n\nImage descriptions (source material included images):\n" + "\n".join(
+                f"- {filename}: {desc}"
+                for filename, desc in image_descriptions.items()
+            )
         
         message = self.client.messages.create(
         model="claude-haiku-4-5-20251001",
@@ -598,10 +679,10 @@ For each question assess:
 - FRQ only: do `rubric_points` fully and precisely capture what a correct answer must contain?
 
 Source content:
-{content}
+{content}{descriptions_block}
 
 Questions (full generated objects, including answers and rubrics):
-{prompt_text}
+{json.dumps([asdict(q) for q in questions], indent=2)}
 """
             }
         ]
@@ -631,6 +712,11 @@ class AnswerValidator:
         questions: list[dict],   # [{"question_id": "q1", "type": "FRQ", "prompt": "..."}, ...]
         answer_key: list[dict],  # [{"question_id": "q1", "answer": "...", "rubric": "..."}, ...]
     ) -> AnswerValidationResult:
+        
+        valid_ids = {q.question_id for q in questions}
+        unknown = [r["question_id"] for r in responses if r["question_id"] not in valid_ids]
+        if unknown:
+            raise ValueError(f"Responses reference unknown question_ids: {unknown}")
 
         payload = {
             "questions": questions,
@@ -694,8 +780,42 @@ away the full answer. If they're asking a concept question, explain clearly."""
         return next(b.text for b in message.content if b.type == "text")
 
 
-class SessionManager:
-    ...
+class DifficultyController:
+    """Deterministic staircase. No LLM involved."""
+
+    def __init__(self, up_streak: int = 2, down_streak: int = 2):
+        self.up_streak = up_streak
+        self.down_streak = down_streak
+
+    def update(self, state: SessionState, result: QuestionResult) -> SessionState:
+        if result.correct:
+            state.consecutive_correct += 1
+            state.consecutive_incorrect = 0
+            if state.consecutive_correct >= self.up_streak:
+                state.difficulty = min(5, state.difficulty + 1)
+                state.consecutive_correct = 0
+        else:
+            state.consecutive_incorrect += 1
+            state.consecutive_correct = 0
+            if state.consecutive_incorrect >= self.down_streak:
+                state.difficulty = max(1, state.difficulty - 1)
+                state.consecutive_incorrect = 0
+
+        state.history.append(result)
+        return state
+
+class SessionStore:
+    def __init__(self):
+        self._sessions: dict[str, SessionState] = {}
+
+    def get_or_create(self, session_id: str, topic: str) -> SessionState:
+        if session_id not in self._sessions:
+            self._sessions[session_id] = SessionState(session_id=session_id, topic=topic)
+        return self._sessions[session_id]
+
+    def save(self, session_id: str, state: SessionState) -> None:
+        self._sessions[session_id] = state
+
 
 async def main():
     pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()

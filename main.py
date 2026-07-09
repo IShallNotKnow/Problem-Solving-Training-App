@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depends
+from fastapi import FastAPI, HTTPException, Depends, Form, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from anthropic import AsyncAnthropic
 from llama_cloud import AsyncLlamaCloud
@@ -11,12 +11,30 @@ import base64
 import json
 from typing import Literal
 from enum import Enum
-from functools import lru_cache
-from pydantic import BaseModel, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, HttpUrl, model_validator
+from uuid import UUID
+from supabase import acreate_client, AsyncClient
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
-app = FastAPI()
+SUPABASE_URL: str = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY")
+
+MAX_CONTENT_CHARS = 12_000
+
+
+# ---------------------------------------------------------------------------
+# Lifespan — single shared AsyncClient, injected via request.app.state
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.supabase = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,22 +43,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ---------------------------------------------------------------------------
+# Dependency — supabase client from app state (no lru_cache needed)
+# ---------------------------------------------------------------------------
+
+async def get_supabase(request: Request) -> AsyncClient:
+    return request.app.state.supabase
+
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
 class GenerationStatus(str, Enum):
     GENERATED = "generated"
     FAILED_VALIDATION = "failed_validation"
+
 
 class Question(BaseModel):
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
     difficulty: int
-    topic: str
+    topics: list[str]
     prompt: str
     correct_answer: str
     explanation: str
     choices: list[str] | None = None
     correct_choice_index: int | None = None
     rubric_points: list[str] | None = None
- 
+
     @model_validator(mode="after")
     def validate_question_type(self) -> "Question":
         if self.question_type == "MCQ":
@@ -54,26 +86,26 @@ class Question(BaseModel):
             if self.choices:
                 raise ValueError(f"{self.question_id}: FRQ should not have choices")
         return self
- 
- 
+
+
 class QuestionResult(BaseModel):
     question_id: str
     score: float
     correct: bool
     feedback: str
     misconception: str | None = None
- 
- 
+
+
 class QuestionValidationResult(BaseModel):
     question_id: str
     approved: bool
     feedback: str = ""
- 
- 
+
+
 class AnswerValidationResult(BaseModel):
     results: list[QuestionResult]
     avg_score: float = 0.0
- 
+
     @model_validator(mode="after")
     def compute_avg_score(self) -> "AnswerValidationResult":
         self.avg_score = (
@@ -81,48 +113,47 @@ class AnswerValidationResult(BaseModel):
             if self.results else 0.0
         )
         return self
- 
+
     def suggested_difficulty_delta(self) -> int:
         if self.avg_score >= 0.85:
             return +1
         if self.avg_score <= 0.4:
             return -1
         return 0
- 
- 
+
+
 class GenerationResult(BaseModel):
     status: GenerationStatus
     questions: list[Question] = []
     validation: list[QuestionValidationResult] = []
     message: str = ""
- 
- 
+
+
 class SessionState(BaseModel):
-    session_id: str
-    topic: str
-    questions: list[Question] = []
-    current_question_index: int = 0
+    session_id: UUID
+    topics: list[str]
     difficulty: int = 3
     consecutive_correct: int = 0
     consecutive_incorrect: int = 0
-    answered_question_ids: list[str] = []
+    current_question_index: int = 0
+    questions: list[Question] = []
     history: list[QuestionResult] = []
     chat_history: list[dict] = []
- 
+
     @property
     def current_question(self) -> Question | None:
         if 0 <= self.current_question_index < len(self.questions):
             return self.questions[self.current_question_index]
         return None
- 
+
     def advance(self) -> None:
         self.current_question_index += 1
- 
- 
+
+
 class SessionContext(BaseModel):
     current_question: Question | None
     chat_history: list[dict]
- 
+
     @classmethod
     def from_state(cls, state: SessionState) -> "SessionContext":
         return cls(
@@ -135,36 +166,51 @@ class ImageInput(BaseModel):
     filename: str
     url: HttpUrl
     content_type: str = "image/png"
- 
- 
+
+
 class GenerateRequest(BaseModel):
-    topic: str
+    topics: list[str]
     content: str
-    images: list[ImageInput] = []
+    raw_markdown: str = ""
     image_descriptions: dict[str, str] = {}
- 
- 
+    raw_images: list[dict] = []
+    pdf_path: str = ""
+
+
 class AnswerRequest(BaseModel):
     question_id: str
     response: str
- 
- 
+
+
 class ChatRequest(BaseModel):
     user_message: str
- 
- 
+
+
 class AnswerResponse(BaseModel):
     feedback: str
     score: float
     new_difficulty: int
     misconception: str | None = None
- 
- 
+
+
 class ChatResponse(BaseModel):
     reply: str
     current_question_index: int
 
-    
+
+class UploadResponse(BaseModel):
+    session_id: UUID
+    content: str
+    raw_markdown: str
+    image_descriptions: dict[str, str]
+    raw_images: list[dict]
+    pdf_path: str
+
+
+# ---------------------------------------------------------------------------
+# Tool schemas
+# ---------------------------------------------------------------------------
+
 QUESTION_GENERATION_TOOL = {
     "name": "generate_questions",
     "description": "Submit a batch of generated study questions with answers and grading rubrics.",
@@ -190,9 +236,11 @@ QUESTION_GENERATION_TOOL = {
                             "maximum": 5,
                             "description": "1 = recall/definition level, 5 = multi-step application requiring synthesis of several concepts."
                         },
-                        "topic": {
-                            "type": "string",
-                            "description": "Short label for the specific concept being tested."
+                        "topics": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": "Concept(s) being tested. Single-concept questions have one entry. Synthesis questions (difficulty 4-5) should list all concepts being combined."
                         },
                         "prompt": {
                             "type": "string",
@@ -224,7 +272,7 @@ QUESTION_GENERATION_TOOL = {
                         }
                     },
                     "required": [
-                        "question_id", "question_type", "difficulty", "topic",
+                        "question_id", "question_type", "difficulty", "topics",
                         "prompt", "correct_answer", "explanation"
                     ],
                     "additionalProperties": False
@@ -235,7 +283,7 @@ QUESTION_GENERATION_TOOL = {
         "additionalProperties": False
     }
 }
- 
+
 QUESTION_VALIDATION_TOOL = {
     "name": "validate_questions",
     "description": "Review a batch of generated questions for correctness, difficulty accuracy, and quality.",
@@ -266,7 +314,7 @@ QUESTION_VALIDATION_TOOL = {
         "additionalProperties": False
     }
 }
- 
+
 ANSWER_VALIDATION_TOOL = {
     "name": "submit_grading",
     "description": "Submit graded results for each student response.",
@@ -304,20 +352,66 @@ ANSWER_VALIDATION_TOOL = {
     }
 }
 
- 
+
+# ---------------------------------------------------------------------------
+# Storage — PDF + images → Supabase Storage buckets
+# ---------------------------------------------------------------------------
+
+class StorageManager:
+    def __init__(self, supabase: AsyncClient):
+        self.db = supabase
+
+    async def store_pdf(self, session_id: UUID, pdf_bytes: bytes) -> str:
+        path = f"{session_id}/document.pdf"
+        await self.db.storage.from_("generation-pdfs").upload(
+            path=path,
+            file=pdf_bytes,
+            file_options={"content-type": "application/pdf"},
+        )
+        return path
+
+    async def store_images(self, session_id: UUID, images: list[dict]) -> list[dict]:
+        async with httpx.AsyncClient() as http_client:
+            async def fetch_and_store(img: dict) -> dict | None:
+                try:
+                    response = await http_client.get(img["url"])
+                    if response.status_code != 200:
+                        return None
+                    path = f"{session_id}/{img['filename']}"
+                    await self.db.storage.from_("generation-images").upload(
+                        path=path,
+                        file=response.content,
+                        file_options={"content-type": img.get("content_type", "image/png")},
+                    )
+                    return {
+                        **{k: v for k, v in img.items() if k != "url"},
+                        "storage_path": path,
+                    }
+                except Exception as e:
+                    print(f"Failed to store image {img.get('filename')}: {e}")
+                    return None
+
+            results = await asyncio.gather(*(fetch_and_store(img) for img in images))
+            return [r for r in results if r is not None]
+
+
+# ---------------------------------------------------------------------------
+# PDF processing
+# ---------------------------------------------------------------------------
+
 class AsyncPDFProcessor:
     def __init__(self):
         api_key = os.getenv("LLAMA_CLOUD_API_KEY")
         if not api_key:
             raise ValueError("LLAMA_CLOUD_API_KEY is not set")
         self.client = AsyncLlamaCloud(api_key=api_key)
- 
+
     async def extract(self, file_bytes: bytes) -> tuple[str, list[dict], list[dict]]:
         uploaded = await self.client.files.create(
             file=("document.pdf", file_bytes, "application/pdf"),
             purpose="parse",
         )
- 
+
         job = await self.client.parsing.parse(
             file_id=uploaded.id,
             tier="agentic",
@@ -325,9 +419,9 @@ class AsyncPDFProcessor:
             expand=["markdown", "items", "images_content_metadata"],
             output_options={"images_to_save": ["layout", "embedded"]},
         )
- 
+
         markdown = getattr(job, "markdown", "") or ""
- 
+
         items = []
         for pages in getattr(getattr(job, "items", None), "pages", []):
             page_number = getattr(pages, "page_number", 0)
@@ -343,7 +437,7 @@ class AsyncPDFProcessor:
                     "bbox": bbox.model_dump() if hasattr(bbox, "model_dump") else bbox,
                     "grounding": item_data.get("grounding"),
                 })
- 
+
         images = [
             {
                 "filename": img.filename,
@@ -355,19 +449,23 @@ class AsyncPDFProcessor:
             }
             for img in job.images_content_metadata.images
         ]
- 
+
         return markdown, items, images
 
+
+# ---------------------------------------------------------------------------
+# Filtering + extraction
+# ---------------------------------------------------------------------------
 
 class ImageFilter:
     def __init__(self):
         self.exclude_categories = {"logo", "icon", "banner", "header", "footer"}
         self.client = AsyncAnthropic()
- 
+
     async def heuristic_filter(self, images: list[dict]) -> list[dict]:
         if not images:
             return []
- 
+
         filtered = []
         for image in images:
             width = image["bbox"]["w"]
@@ -378,27 +476,27 @@ class ImageFilter:
             if aspect_ratio > 10 or aspect_ratio < 0.1:
                 continue
             filtered.append(image)
- 
+
         return filtered
- 
+
     async def semantic_filter(
         self, images: list[dict], markdown: str
     ) -> tuple[list[dict], dict[str, str]]:
         if not images:
             return [], {}
- 
+
         final_images: list[dict] = []
         descriptions: dict[str, str] = {}
- 
+
         async with httpx.AsyncClient() as http_client:
             for image in images:
                 try:
                     img_response = await http_client.get(image["url"])
                     if img_response.status_code != 200:
                         continue
- 
+
                     base64_image = base64.b64encode(img_response.content).decode("utf-8")
- 
+
                     result = await self.client.messages.create(
                         model="claude-haiku-4-5-20251001",
                         max_tokens=500,
@@ -429,25 +527,25 @@ class ImageFilter:
                             ],
                         }],
                     )
- 
+
                     response_text = result.content[0].text.strip()
                     first_line = response_text.split("\n")[0].upper()
- 
+
                     if first_line == "YES":
                         final_images.append(image)
                         if "\n" in response_text:
                             descriptions[image["filename"]] = response_text.split("\n", 1)[1].strip()
- 
+
                 except Exception as e:
                     print(f"Error filtering image {image.get('filename')}: {e}")
                     final_images.append(image)  # keep on error
- 
+
         return final_images, descriptions
- 
- 
+
+
 class TextFilter:
     KEEP_TYPES = {"paragraph", "heading", "equation", "table", "figure_caption", "list", "text", "code"}
- 
+
     async def item_filter(self, items: list[dict]) -> list[dict]:
         if not items:
             return []
@@ -466,7 +564,7 @@ class ConceptExtractor:
         "text": 0.2,
     }
     ALWAYS_INCLUDE = {"heading", "equation", "theorem", "definition", "code", "table"}
- 
+
     async def score_pages(self, items: list[dict]) -> dict[int, float]:
         page_scores: dict[int, float] = {}
         for item in items:
@@ -474,28 +572,36 @@ class ConceptExtractor:
             weight = self.CONCEPT_SIGNALS.get(item.get("type", ""), 0)
             page_scores[page] = page_scores.get(page, 0) + weight
         return page_scores
- 
+
     async def prioritize_content(self, items: list[dict], page_scores: dict[int, float]) -> str:
         sorted_pages = sorted(page_scores, key=page_scores.get, reverse=True)
- 
+
         result = []
-        for page in sorted_pages:
+        total = 0
+        for page in sorted_pages:            
             page_items = [i for i in items if i["page"] == page]
             score = page_scores[page]
             has_priority_item = any(i.get("type") in self.ALWAYS_INCLUDE for i in page_items)
- 
+
             if score > 3.0 or has_priority_item:
                 page_text = "\n".join(i["md"] for i in page_items if i.get("md"))
                 label = "[HIGH PRIORITY]" if score > 3.0 else "[CONTAINS KEY CONTENT]"
+                if total + len(page_text) > MAX_CONTENT_CHARS:
+                    break
                 result.append(f"{label} page {page}\n{page_text}")
- 
+                total += len(page_text)
+            
         return "\n\n".join(result)
 
+
+# ---------------------------------------------------------------------------
+# Question generation + validation
+# ---------------------------------------------------------------------------
 
 class QuestionValidator:
     def __init__(self):
         self.client = AsyncAnthropic()
- 
+
     async def validate_questions(
         self,
         questions: list[Question],
@@ -504,13 +610,13 @@ class QuestionValidator:
     ) -> list[QuestionValidationResult]:
         if not questions:
             return []
- 
+
         descriptions_block = ""
         if image_descriptions:
             descriptions_block = "\n\nImage descriptions:\n" + "\n".join(
                 f"- {filename}: {desc}" for filename, desc in image_descriptions.items()
             )
- 
+
         message = await self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
@@ -519,7 +625,7 @@ class QuestionValidator:
             messages=[{
                 "role": "user",
                 "content": f"""You are a study question validator. Evaluate the following questions against the source content.
- 
+
 For each question assess:
 - Correctness: is `correct_answer` (and `rubric_points` for FRQ) actually correct given the content?
 - Relevance: is it directly testable from the content?
@@ -528,20 +634,20 @@ For each question assess:
 - Difficulty accuracy: does the actual difficulty match its stated `difficulty` (1-5)?
 - MCQ only: are `choices` plausible distractors, with exactly one correct option at `correct_choice_index`?
 - FRQ only: do `rubric_points` fully capture what a correct answer must contain?
- 
+
 Source content:
 {content}{descriptions_block}
- 
+
 Questions (full generated objects, including answers and rubrics):
 {json.dumps([q.model_dump() for q in questions], indent=2)}
 """,
             }],
         )
- 
+
         tool_use = next((b for b in message.content if b.type == "tool_use"), None)
         if tool_use is None:
             raise ValueError("Validator did not return a tool call.")
- 
+
         return [
             QuestionValidationResult(
                 question_id=entry["question_id"],
@@ -550,39 +656,31 @@ Questions (full generated objects, including answers and rubrics):
             )
             for entry in tool_use.input["reviews"]
         ]
- 
- 
+
+
 class QuestionGenerator:
     def __init__(self):
         self.client = AsyncAnthropic()
         self.question_validator = QuestionValidator()
- 
-    async def _build_image_block(self, image: ImageInput) -> dict | None:
-        async with httpx.AsyncClient() as http_client:
-            try:
-                img_response = await http_client.get(str(image.url))
-                if img_response.status_code != 200:
-                    return None
-                base64_image = base64.b64encode(img_response.content).decode("utf-8")
-                return {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": image.content_type,
-                        "data": base64_image,
-                    },
-                }
-            except Exception as e:
-                print(f"Error fetching image {image.filename}: {e}")
-                return None
- 
+
+    async def _build_image_block(self, image_bytes: bytes, content_type: str) -> dict:
+        base64_image = base64.b64encode(image_bytes).decode("utf-8")
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": content_type,
+                "data": base64_image,
+            },
+        }
+
     async def generate_questions(
-        self,
-        content: str,
-        images: list[dict],
-        image_descriptions: dict[str, str],
-    ) -> GenerationResult:
-        # Build base message content
+    self,
+    content: str,
+    raw_images: list[dict],
+    image_descriptions: dict[str, str],
+    storage_manager: StorageManager,
+) -> GenerationResult:
         message_content: list[dict] = [{
             "type": "text",
             "text": (
@@ -593,110 +691,129 @@ class QuestionGenerator:
                 f"Content:\n{content}\n\nImages:"
             ),
         }]
- 
-        # Convert to ImageInput and fetch in parallel
-        image_inputs = [
-            ImageInput(filename=img["filename"], url=img["url"], content_type=img["content_type"])
-            for img in images
-        ]
-        image_blocks = await asyncio.gather(
-            *(self._build_image_block(img) for img in image_inputs)
+
+        image_bytes_list = await asyncio.gather(
+            *(storage_manager.download_image(img["storage_path"]) for img in raw_images)
         )
- 
-        # Interleave image blocks and descriptions — zip over image_inputs so .filename works
-        for i, (image, image_block) in enumerate(zip(image_inputs, image_blocks), start=1):
-            if image_block is not None:
-                message_content.append(image_block)
-            description = image_descriptions.get(image.filename)
+        for i, (img, image_bytes) in enumerate(zip(raw_images, image_bytes_list), start=1):
+            if image_bytes is not None:
+                message_content.append(self._build_image_block(image_bytes, img.get("content_type", "image/png")))
+            description = image_descriptions.get(img["filename"])
             if description:
-                message_content.append({
-                    "type": "text",
-                    "text": f"Image {i} description:\n{description}",
-                })
- 
-        approved = False
-        attempts = 0
+                message_content.append({"type": "text", "text": f"Image {i} description:\n{description}"})
+
         MAX_RETRIES = 3
-        questions: list[Question] = []
+        attempts = 0
+        approved_questions: dict[str, Question] = {}
         validation: list[QuestionValidationResult] = []
-        feedback_history: list[tuple[str, str]] = []
- 
-        while not approved and attempts < MAX_RETRIES:
+        feedback_history: dict[str, str] = {}
+
+        while attempts < MAX_RETRIES:
+            n_still_needed = 20 - len(approved_questions)
+            if n_still_needed == 0:
+                break
+
             current_content = message_content.copy()
+
             if feedback_history:
-                feedback_str = "\n".join(f"Question {qid}: {fb}" for qid, fb in feedback_history)
+                feedback_str = "\n".join(
+                    f"- {qid}: {fb}" for qid, fb in feedback_history.items()
+                )
                 current_content.append({
                     "type": "text",
-                    "text": f"Previous attempt was rejected. Fix these issues:\n{feedback_str}",
+                    "text": (
+                        f"The following {len(feedback_history)} question(s) were rejected. "
+                        f"Generate exactly {n_still_needed} replacement question(s) with new unique IDs "
+                        f"(do not reuse rejected IDs). Fix these issues:\n{feedback_str}"
+                    ),
                 })
- 
+            else:
+                current_content.append({
+                    "type": "text",
+                    "text": "Generate exactly 20 questions (10 MCQ, 10 FRQ).",
+                })
+
             message = await self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=4096,  # 20 questions needs more room than 2048
+                max_tokens=4096,
                 tools=[QUESTION_GENERATION_TOOL],
                 tool_choice={"type": "tool", "name": "generate_questions"},
                 messages=[{"role": "user", "content": current_content}],
             )
- 
+
             tool_use = next((b for b in message.content if b.type == "tool_use"), None)
             if tool_use is None:
                 raise RuntimeError("Model failed to return a tool call despite forced tool_choice")
- 
-            questions = [Question(**q) for q in tool_use.input["questions"]]
- 
-            seen_ids = {q.question_id for q in questions}
-            if len(seen_ids) != len(questions):
+
+            new_questions = [Question(**q) for q in tool_use.input["questions"]]
+            new_questions = [q for q in new_questions if q.question_id not in approved_questions]
+
+            seen_ids = [q.question_id for q in new_questions]
+            if len(seen_ids) != len(set(seen_ids)):
                 raise ValueError("Duplicate question_id in generated batch")
- 
-            validation = await self.question_validator.validate_questions(questions, content)
-            approved = all(review.approved for review in validation)
+
+            # validate only the new batch
+            new_validation = await self.question_validator.validate_questions(
+                new_questions, content, image_descriptions
+            )
+
+            # split into approved and rejected
+            rejected_ids = {r.question_id for r in new_validation if not r.approved}
+            for q in new_questions:
+                if q.question_id not in rejected_ids:
+                    approved_questions[q.question_id] = q
+
+            # update validation list — replace entries for re-attempted IDs
+            existing = {r.question_id: r for r in validation}
+            for r in new_validation:
+                existing[r.question_id] = r
+            validation = list(existing.values())
+
+            # build feedback for next round — only rejected ones from this round
+            feedback_history = {
+                r.question_id: r.feedback
+                for r in new_validation
+                if not r.approved
+            }
+
             attempts += 1
- 
-            if not approved:
-                feedback_history = [
-                    (review.question_id, review.feedback)
-                    for review in validation
-                    if not review.approved
-                ]
- 
+
+        all_approved = len(approved_questions) == 20
         return GenerationResult(
-            status=GenerationStatus.GENERATED if approved else GenerationStatus.FAILED_VALIDATION,
-            questions=questions,
+            status=GenerationStatus.GENERATED if all_approved else GenerationStatus.FAILED_VALIDATION,
+            questions=list(approved_questions.values()),
             validation=validation,
         )
 
+# ---------------------------------------------------------------------------
+# Answer validation + chat
+# ---------------------------------------------------------------------------
 
 class AnswerValidator:
     def __init__(self):
         self.client = AsyncAnthropic()
- 
+
     async def validate_answers(
         self,
-        responses: list[dict],     # [{"question_id": "q1", "response": "..."}]
+        responses: list[dict],
         questions: list[Question],
     ) -> AnswerValidationResult:
         valid_ids = {q.question_id for q in questions}
         unknown = [r["question_id"] for r in responses if r["question_id"] not in valid_ids]
         if unknown:
             raise ValueError(f"Responses reference unknown question_ids: {unknown}")
- 
-        # Build answer key from session questions — no need for the client to send it
-        answer_key = [
-            {
-                "question_id": q.question_id,
-                "correct_answer": q.correct_answer,
-                "rubric_points": q.rubric_points,
-            }
-            for q in questions
-            if q.question_id in {r["question_id"] for r in responses}
-        ]
- 
+
+        answer_key = next(
+            {"question_id": q.question_id, "correct_answer": q.correct_answer, "rubric_points": q.rubric_points}
+            for q in questions if q.question_id == responses[0]["question_id"]
+        )
+
         payload = {
             "questions": [q.model_dump() for q in questions],
             "answer_key": answer_key,
             "student_responses": responses,
         }
- 
+
         message = await self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
@@ -705,29 +822,29 @@ class AnswerValidator:
             messages=[{
                 "role": "user",
                 "content": f"""You are grading a student's answers against an answer key.
- 
+
 For FRQs: grade for conceptual/procedural correctness, not exact string match.
 Different variable names, equivalent algebraic forms, or alternate valid solution
 paths should NOT be penalized. Only dock points for actual errors in reasoning,
 method, or final result.
- 
+
 For MCQs: correct is binary (score 1.0 or 0.0).
- 
+
 Data:
 {json.dumps(payload, indent=2)}
 """,
             }],
         )
- 
+
         tool_use = next(b for b in message.content if b.type == "tool_use")
         results = [QuestionResult(**r) for r in tool_use.input["results"]]
         return AnswerValidationResult(results=results)
-    
+
 
 class StudyChatAssistant:
     def __init__(self):
         self.client = AsyncAnthropic()
- 
+
     async def respond(self, user_message: str, session_context: SessionContext) -> str:
         question_context = (
             json.dumps(session_context.current_question.model_dump(), indent=2)
@@ -740,15 +857,15 @@ class StudyChatAssistant:
             messages=[{
                 "role": "user",
                 "content": f"""You are a study assistant helping a student work through practice questions.
- 
+
 Current question the student is looking at:
 {question_context}
- 
+
 Recent conversation:
 {json.dumps(session_context.chat_history, indent=2)}
- 
+
 Student's message: {user_message}
- 
+
 Answer conversationally. If they're asking for a hint, guide them without giving
 away the full answer. If they're asking a concept question, explain clearly.""",
             }],
@@ -756,11 +873,15 @@ away the full answer. If they're asking a concept question, explain clearly.""",
         return next(b.text for b in message.content if b.type == "text")
 
 
+# ---------------------------------------------------------------------------
+# Difficulty controller
+# ---------------------------------------------------------------------------
+
 class DifficultyController:
     def __init__(self, up_streak: int = 2, down_streak: int = 2):
         self.up_streak = up_streak
         self.down_streak = down_streak
- 
+
     def update(self, state: SessionState, result: QuestionResult) -> SessionState:
         if result.correct:
             state.consecutive_correct += 1
@@ -774,150 +895,321 @@ class DifficultyController:
             if state.consecutive_incorrect >= self.down_streak:
                 state.difficulty = max(1, state.difficulty - 1)
                 state.consecutive_incorrect = 0
- 
+
         state.history.append(result)
         return state
 
+
+# ---------------------------------------------------------------------------
+# Session store — all DB operations, fully async
+# ---------------------------------------------------------------------------
+
 class SessionStore:
-    def __init__(self):
-        self._sessions: dict[str, SessionState] = {}
- 
-    def get_or_create(self, session_id: str, topic: str) -> SessionState:
-        if session_id not in self._sessions:
-            self._sessions[session_id] = SessionState(session_id=session_id, topic=topic)
-        return self._sessions[session_id]
- 
-    def get(self, session_id: str) -> SessionState:
-        state = self._sessions.get(session_id)
-        if state is None:
-            raise KeyError(f"Session {session_id} not found")
-        return state
- 
-    def save(self, session_id: str, state: SessionState) -> None:
-        self._sessions[session_id] = state
+    def __init__(self, supabase: AsyncClient):
+        self.db = supabase
+
+    async def get(self, session_id: UUID) -> SessionState:
+        # all four queries run concurrently
+        row_res, questions_res, chat_res, history_res = await asyncio.gather(
+            self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
+            self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
+            self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
+            self.db.table("answer_attempts").select("*").eq("session_id", session_id).execute(),
+        )
+        return SessionState(
+            session_id=session_id,
+            questions=[Question(**q) for q in questions_res.data],
+            chat_history=list(reversed(chat_res.data)),
+            history=[QuestionResult(**h) for h in history_res.data],
+            **{k: row_res.data[k] for k in (
+                "topics", "difficulty", "consecutive_correct",
+                "consecutive_incorrect", "current_question_index"
+            )}
+        )
+
+    async def get_or_create(self, session_id: UUID, topics: list[str]) -> SessionState:
+        try:
+            return await self.get(session_id)
+        except Exception:
+            await self.db.table("sessions").insert({
+                "session_id": session_id,
+                "topics": topics,
+            }).execute()
+            return SessionState(session_id=session_id, topics=topics)
+
+    async def save(self, session_id: UUID, state: SessionState) -> None:
+        await self.db.table("sessions").update({
+            "difficulty": state.difficulty,
+            "consecutive_correct": state.consecutive_correct,
+            "consecutive_incorrect": state.consecutive_incorrect,
+            "current_question_index": state.current_question_index,
+            "last_active_at": "now()",
+        }).eq("session_id", session_id).execute()
+
+    async def append_answer(
+        self,
+        session_id: UUID,
+        response: str,          # raw student answer from AnswerRequest
+        result: QuestionResult,
+    ) -> None:
+        await self.db.table("answer_attempts").insert({
+            "session_id": session_id,
+            "question_id": result.question_id,
+            "response": response,
+            "score": result.score,
+            "correct": result.correct,
+            "feedback": result.feedback,
+            "misconception": result.misconception,
+        }).execute()
+
+    async def append_chat(self, session_id: UUID, role: str, content: str) -> None:
+        await self.db.table("chat_messages").insert({
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+        }).execute()
+
+    async def delete_chat(self, session_id: UUID) -> None:
+        await self.db.table("chat_messages").delete().eq("session_id", session_id).execute()
+
+    async def append_generation_input(
+        self,
+        session_id: UUID,
+        content: str,
+        raw_markdown: str,
+        image_descriptions: dict[str, str],
+        raw_images: list[dict],         # already stored; contain storage_path, no url
+        pdf_path: str,
+    ) -> None:
+        await self.db.table("generation_inputs").insert({
+            "session_id": session_id,
+            "content": content,
+            "raw_markdown": raw_markdown,
+            "image_descriptions": image_descriptions,
+            "images": raw_images,
+            "pdf_path": pdf_path,
+        }).execute()
 
 
-@lru_cache
+# ---------------------------------------------------------------------------
+# Dependency factories — supabase-dependent ones are NOT lru_cached because
+# they receive the AsyncClient which is created once in lifespan
+# ---------------------------------------------------------------------------
+
+def get_pdf_processor() -> AsyncPDFProcessor:
+    return AsyncPDFProcessor()
+
+def get_image_filter() -> ImageFilter:
+    return ImageFilter()
+
+def get_text_filter() -> TextFilter:
+    return TextFilter()
+
+def get_concept_extractor() -> ConceptExtractor:
+    return ConceptExtractor()
+
 def get_question_generator() -> QuestionGenerator:
     return QuestionGenerator()
 
-@lru_cache
-def get_session_store() -> SessionStore:
-    return SessionStore()
-
-@lru_cache
 def get_answer_validator() -> AnswerValidator:
     return AnswerValidator()
 
-@lru_cache
 def get_difficulty_controller() -> DifficultyController:
     return DifficultyController()
 
-@lru_cache
 def get_study_chat_assistant() -> StudyChatAssistant:
     return StudyChatAssistant()
+
+async def get_session_store(supabase: AsyncClient = Depends(get_supabase)) -> SessionStore:
+    return SessionStore(supabase)
+
+async def get_storage_manager(supabase: AsyncClient = Depends(get_supabase)) -> StorageManager:
+    return StorageManager(supabase)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
+async def upload(
+    session_id: UUID,
+    topics: list[str] = Form(...),
+    file: UploadFile = File(...),
+    pdf_processor: AsyncPDFProcessor = Depends(get_pdf_processor),
+    image_filter: ImageFilter = Depends(get_image_filter),
+    text_filter: TextFilter = Depends(get_text_filter),
+    concept_extractor: ConceptExtractor = Depends(get_concept_extractor),
+    storage_manager: StorageManager = Depends(get_storage_manager),
+    session_store: SessionStore = Depends(get_session_store),
+):
+    pdf_bytes = await file.read()
+
+    # extract
+    markdown, items, images = await pdf_processor.extract(pdf_bytes)
+
+    # filter
+    filtered_images = await image_filter.heuristic_filter(images)
+    filtered_images, descriptions = await image_filter.semantic_filter(filtered_images, markdown)
+    filtered_items = await text_filter.item_filter(items)
+
+    # prioritize
+    scored_pages = await concept_extractor.score_pages(filtered_items)
+    content = await concept_extractor.prioritize_content(filtered_items, scored_pages)
+
+    # store PDF and images concurrently — presigned URLs are ephemeral so do
+    # this before returning; storage_path replaces url in raw_images
+    pdf_path, stored_images = await asyncio.gather(
+        storage_manager.store_pdf(session_id, pdf_bytes),
+        storage_manager.store_images(session_id, filtered_images),
+    )
+
+    # create session row so generate endpoint can reference it
+    await session_store.get_or_create(session_id, topics=topics)
+
+    return UploadResponse(
+        session_id=session_id,
+        content=content,
+        raw_markdown=markdown,
+        images=[
+            ImageInput(
+                filename=img["filename"],
+                url=img["url"],
+                content_type=img["content_type"],
+            )
+            for img in filtered_images
+        ],
+        image_descriptions=descriptions,
+        raw_images=stored_images,   # storage_path present, url stripped
+        pdf_path=pdf_path,
+    )
 
 
 @app.post("/sessions/{session_id}/generate", response_model=GenerationResult)
 async def generate(
-    session_id: str,
+    session_id: UUID,
     req: GenerateRequest,
     question_generator: QuestionGenerator = Depends(get_question_generator),
     session_store: SessionStore = Depends(get_session_store),
+    storage_manager: StorageManager = Depends(get_storage_manager),
 ):
     result = await question_generator.generate_questions(
-        req.content, [img.model_dump() for img in req.images], req.image_descriptions
+        req.content, req.raw_images, req.image_descriptions, storage_manager
     )
+
     if result.status == GenerationStatus.GENERATED:
-        state = session_store.get_or_create(session_id, topic=req.topic)
+        state = await session_store.get_or_create(session_id, topics=req.topics)
         state.questions = result.questions
-        session_store.save(session_id, state)
+        await session_store.save(session_id, state)
+
+        # only store inputs that produced validated questions — keeps training
+        # data clean; failed generations are a separate signal if needed later
+        await session_store.append_generation_input(
+            session_id=session_id,
+            content=req.content,
+            raw_markdown=req.raw_markdown,
+            image_descriptions=req.image_descriptions,
+            raw_images=req.raw_images,
+            pdf_path=req.pdf_path,
+        )
+
         return result
+
     raise HTTPException(status_code=422, detail="Question generation failed validation after max retries")
- 
- 
+
+
 @app.get("/sessions/{session_id}", response_model=SessionState)
 async def get_session(
-    session_id: str,
+    session_id: UUID,
     session_store: SessionStore = Depends(get_session_store),
 ):
     try:
-        return session_store.get(session_id)
-    except KeyError:
+        return await session_store.get(session_id)
+    except Exception:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
- 
- 
+
+
 @app.post("/sessions/{session_id}/answer", response_model=AnswerResponse)
 async def submit_answer(
-    session_id: str,
+    session_id: UUID,
     req: AnswerRequest,
     session_store: SessionStore = Depends(get_session_store),
     answer_validator: AnswerValidator = Depends(get_answer_validator),
     difficulty_controller: DifficultyController = Depends(get_difficulty_controller),
 ):
     try:
-        state = session_store.get(session_id)
-    except KeyError:
+        state = await session_store.get(session_id)
+    except Exception:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
- 
+
     result = await answer_validator.validate_answers(
         [{"question_id": req.question_id, "response": req.response}],
         state.questions,
     )
     question_result = result.results[0]
     state = difficulty_controller.update(state, question_result)
-    state.answered_question_ids.append(req.question_id)
     state.advance()
-    session_store.save(session_id, state)
- 
+
+    # save scalar state and persist the answer concurrently
+    await asyncio.gather(
+        session_store.save(session_id, state),
+        session_store.append_answer(session_id, req.response, question_result),
+    )
+
     return AnswerResponse(
         feedback=question_result.feedback,
         score=question_result.score,
         new_difficulty=state.difficulty,
         misconception=question_result.misconception,
     )
- 
- 
+
+
 @app.post("/sessions/{session_id}/chat", response_model=ChatResponse)
 async def chat(
-    session_id: str,
+    session_id: UUID,
     req: ChatRequest,
     session_store: SessionStore = Depends(get_session_store),
     study_chat: StudyChatAssistant = Depends(get_study_chat_assistant),
 ):
     try:
-        state = session_store.get(session_id)
-    except KeyError:
+        state = await session_store.get(session_id)
+    except Exception:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
- 
+
     context = SessionContext.from_state(state)
     reply = await study_chat.respond(req.user_message, context)
-    state.chat_history.append({"role": "user", "content": req.user_message})
-    state.chat_history.append({"role": "assistant", "content": reply})
-    session_store.save(session_id, state)
- 
+
+    # persist both chat messages concurrently
+    await asyncio.gather(
+        session_store.append_chat(session_id, "user", req.user_message),
+        session_store.append_chat(session_id, "assistant", reply),
+    )
+
     return ChatResponse(reply=reply, current_question_index=state.current_question_index)
 
 
+# ---------------------------------------------------------------------------
+# main() kept for local pipeline testing only
+# ---------------------------------------------------------------------------
 
 async def main():
     pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()
- 
+
     processor = AsyncPDFProcessor()
     markdown, items, images = await processor.extract(pdf_bytes)
- 
+
     image_filter = ImageFilter()
     filtered_images = await image_filter.heuristic_filter(images)
     filtered_images, descriptions = await image_filter.semantic_filter(filtered_images, markdown)
- 
+
     text_filter = TextFilter()
     filtered_items = await text_filter.item_filter(items)
- 
+
     concept_extractor = ConceptExtractor()
     scored_pages = await concept_extractor.score_pages(filtered_items)
     prompt_str = await concept_extractor.prioritize_content(filtered_items, scored_pages)
- 
+
     print(prompt_str[:500])
- 
- 
+
+
 asyncio.run(main())

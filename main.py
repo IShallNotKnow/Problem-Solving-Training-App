@@ -9,9 +9,9 @@ import asyncio
 import httpx
 import base64
 import json
-from typing import Literal
+from typing import Literal, Annotated
 from enum import Enum
-from pydantic import BaseModel, HttpUrl, model_validator
+from pydantic import BaseModel, HttpUrl, model_validator, Field
 from uuid import UUID
 from supabase import acreate_client, AsyncClient
 from contextlib import asynccontextmanager
@@ -86,20 +86,53 @@ class Question(BaseModel):
             if self.choices:
                 raise ValueError(f"{self.question_id}: FRQ should not have choices")
         return self
+    
+class TopicResult(BaseModel):
+    topic: str
+    score: float
+    correct: bool
+    feedback: str
+    confidence: float
+    adaptation_signal: float
+    misconception: str | None = None
 
+class TopicUpdate(BaseModel):
+    topic: str
+    previous_difficulty: float
+    new_difficulty: float
+    delta: float
+    reason: str
 
 class QuestionResult(BaseModel):
     question_id: str
     score: float
     correct: bool
     feedback: str
-    misconception: str | None = None
+    topic_results: list[TopicResult] = Field(default_factory=list)
 
 
 class QuestionValidationResult(BaseModel):
     question_id: str
     approved: bool
     feedback: str = ""
+
+
+class TopicStats(BaseModel):
+    topic: str
+    difficulty: float = 3.0
+    attempts: int = 0
+    proficiency: float = 0.0
+    confidence: float = 0.0
+    recent_history: list[float] = Field(default_factory=list)
+
+
+class TopicEvidence(BaseModel):
+    topic: str
+    score: float
+    confidence: float
+    proficiency_signal: float
+    misconception: str | None
+    feedback: str
 
 
 class AnswerValidationResult(BaseModel):
@@ -114,31 +147,22 @@ class AnswerValidationResult(BaseModel):
         )
         return self
 
-    def suggested_difficulty_delta(self) -> int:
-        if self.avg_score >= 0.85:
-            return +1
-        if self.avg_score <= 0.4:
-            return -1
-        return 0
-
 
 class GenerationResult(BaseModel):
     status: GenerationStatus
-    questions: list[Question] = []
-    validation: list[QuestionValidationResult] = []
+    questions: list[Question] = Field(default_factory=list)
+    validation: list[QuestionValidationResult] = Field(default_factory=list)
     message: str = ""
 
 
 class SessionState(BaseModel):
     session_id: UUID
-    topics: list[str]
-    difficulty: int = 3
-    consecutive_correct: int = 0
-    consecutive_incorrect: int = 0
+    label: str
     current_question_index: int = 0
-    questions: list[Question] = []
-    history: list[QuestionResult] = []
-    chat_history: list[dict] = []
+    topic_stats: dict[str, TopicStats] = Field(default_factory=dict)
+    questions: list[Question] = Field(default_factory=list)
+    history: list[QuestionResult] = Field(default_factory=list)
+    chat_history: list[dict] = Field(default_factory=list)
 
     @property
     def current_question(self) -> Question | None:
@@ -148,6 +172,25 @@ class SessionState(BaseModel):
 
     def advance(self) -> None:
         self.current_question_index += 1
+
+    def get_topic_difficulty(self, topics: list[str]) -> int:
+        """Average difficulty across the question's topics, default 3."""
+        stats = [self.topic_stats[t] for t in topics if t in self.topic_stats]
+        if not stats:
+            return 3.0
+        return round(sum(s.difficulty for s in stats) / len(stats), 1)
+
+    def topic_profile(self, min_attempts: int = 2) -> dict:
+        strong, weak, unseen = [], [], []
+        for topic, stats in self.topic_stats.items():
+            if stats.attempts >= min_attempts:
+                if stats.proficiency >= 0.7:
+                    strong.append(topic)
+                else:
+                    weak.append(topic)
+            else:
+                unseen.append(topic)
+        return {"strong": strong, "weak": weak, "unseen": unseen}
 
 
 class SessionContext(BaseModel):
@@ -169,12 +212,13 @@ class ImageInput(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    topics: list[str]
+    label: str
     content: str
     raw_markdown: str = ""
     image_descriptions: dict[str, str] = {}
-    raw_images: list[dict] = []
     pdf_path: str = ""
+    topics: list[str]
+    topic_profile: dict | None = None
 
 
 class AnswerRequest(BaseModel):
@@ -189,7 +233,7 @@ class ChatRequest(BaseModel):
 class AnswerResponse(BaseModel):
     feedback: str
     score: float
-    new_difficulty: int
+    topic_stats: dict[str, TopicStats]
     misconception: str | None = None
 
 
@@ -203,9 +247,8 @@ class UploadResponse(BaseModel):
     content: str
     raw_markdown: str
     image_descriptions: dict[str, str]
-    raw_images: list[dict]
     pdf_path: str
-
+    topics_added: list[str] 
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -342,9 +385,36 @@ ANSWER_VALIDATION_TOOL = {
                         "misconception": {
                             "type": ["string", "null"],
                             "description": "Short tag for a recurring error type if present, else null."
-                        }
+                        },
+                        "topic_results": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "topic": {"type": "string"},
+                                    "correct": {"type": "boolean"},
+                                    "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
+                                    "difficulty_delta": {
+                                        "type": "number",
+                                        "description": (
+                                            "Recommended difficulty adjustment for this topic as a float between -1.0 and 1.0.\n"
+                                            "Use the full range rather than snapping to integers:\n"
+                                            "-1.0: severe regression — missed fundamentals well below current difficulty.\n"
+                                            "-0.5: moderate struggle — got partial credit but key rubric points missed.\n"
+                                            "-0.25: minor stumble — mostly correct but shows a small gap at current level.\n"
+                                            " 0.0: performance matches current difficulty — no change warranted.\n"
+                                            "+0.25: solid performance — met all rubric points cleanly at current difficulty.\n"
+                                            "+0.5: strong performance — exceeded rubric expectations at current difficulty.\n"
+                                            "+1.0: exceptional — demonstrated mastery well above current difficulty level."
+                                        ),
+                                    },
+                                },
+                                "required": ["topic", "correct", "feedback", "difficulty_delta"]
+                            },
+                            "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
+                        },
                     },
-                    "required": ["question_id", "score", "correct", "feedback"]
+                    "required": ["question_id", "score", "correct", "feedback", "topic_results"]
                 }
             }
         },
@@ -360,6 +430,22 @@ ANSWER_VALIDATION_TOOL = {
 class StorageManager:
     def __init__(self, supabase: AsyncClient):
         self.db = supabase
+    
+    async def list_images(self, session_id: UUID) -> list[str]:
+        response = await self.db.storage.from_("generation-images").list(str(session_id))
+        return [
+            {
+                "storage_path": f"{session_id}/{item['name']}",
+                "filename": item["name"],
+                "content_type": item.get(
+                    "metadata", {}
+                ).get(
+                    "mimetype",
+                    "image/png"
+                ),
+            }
+            for item in response
+        ]
 
     async def store_pdf(self, session_id: UUID, pdf_bytes: bytes) -> str:
         path = f"{session_id}/document.pdf"
@@ -369,6 +455,28 @@ class StorageManager:
             file_options={"content-type": "application/pdf"},
         )
         return path
+
+    async def download_image(self, session_id: UUID, storage_path: str) -> bytes | None:
+        try:
+            session = (
+                await self.db.table("sessions")
+                .select("id")
+                .eq("id", str(session_id))
+                .maybe_single()
+                .execute()
+            )
+
+            if not session.data:
+                print(f"Unauthorized access to session {session_id}")
+                return None
+
+            if storage_path != f"{session_id}/{storage_path.split('/')[-1]}":
+                return None
+
+            return await self.db.storage.from_("generation-images").download(storage_path)
+        except Exception as e:
+            print(f"Failed to download image {storage_path}: {e}")
+            return None
 
     async def store_images(self, session_id: UUID, images: list[dict]) -> list[dict]:
         async with httpx.AsyncClient() as http_client:
@@ -659,9 +767,9 @@ Questions (full generated objects, including answers and rubrics):
 
 
 class QuestionGenerator:
-    def __init__(self):
-        self.client = AsyncAnthropic()
-        self.question_validator = QuestionValidator()
+    def __init__(self, client, validator):
+        self.client = client
+        self.question_validator = validator
 
     async def _build_image_block(self, image_bytes: bytes, content_type: str) -> dict:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -675,12 +783,32 @@ class QuestionGenerator:
         }
 
     async def generate_questions(
-    self,
-    content: str,
-    raw_images: list[dict],
-    image_descriptions: dict[str, str],
-    storage_manager: StorageManager,
-) -> GenerationResult:
+        self,
+        content: str,
+        raw_images: list[dict],
+        image_descriptions: dict[str, str],
+        storage_manager: StorageManager,
+        topic_profile: dict | None = None,
+    ) -> GenerationResult:
+        
+        balance_instruction = ""
+        if topic_profile:
+            strong = topic_profile.get("strong", [])
+            weak = topic_profile.get("weak", [])
+            unseen = topic_profile.get("unseen", [])
+
+            parts = []
+            if weak:
+                parts.append(f"Prioritize questions on weak topics: {', '.join(weak)}. At least 8 of 20 questions should target these.")
+            if strong:
+                parts.append(f"Include 4-6 questions on strong topics ({', '.join(strong)})" 
+                             f"to maintain retention — mix these with weak topics in synthesis questions where it makes sense.")
+            if unseen:
+                parts.append(f"Cover unseen topics at least once each: {', '.join(unseen)}.")
+            
+            balance_instruction = "\n\n" + " ".join(parts) if parts else ""
+
+
         message_content: list[dict] = [{
             "type": "text",
             "text": (
@@ -688,7 +816,7 @@ class QuestionGenerator:
                 "Based on the following content and images, generate 20 study questions "
                 "(10 MCQ, 10 FRQ) that test understanding of the key concepts and "
                 "problem-solving skills.\n\n"
-                f"Content:\n{content}\n\nImages:"
+                f"Content:\n{content}{balance_instruction}\n\nImages:"
             ),
         }]
 
@@ -697,7 +825,7 @@ class QuestionGenerator:
         )
         for i, (img, image_bytes) in enumerate(zip(raw_images, image_bytes_list), start=1):
             if image_bytes is not None:
-                message_content.append(self._build_image_block(image_bytes, img.get("content_type", "image/png")))
+                message_content.append(await self._build_image_block(image_bytes, img.get("content_type", "image/png")))
             description = image_descriptions.get(img["filename"])
             if description:
                 message_content.append({"type": "text", "text": f"Image {i} description:\n{description}"})
@@ -797,6 +925,7 @@ class AnswerValidator:
         self,
         responses: list[dict],
         questions: list[Question],
+        state: SessionState,
     ) -> AnswerValidationResult:
         valid_ids = {q.question_id for q in questions}
         unknown = [r["question_id"] for r in responses if r["question_id"] not in valid_ids]
@@ -812,6 +941,12 @@ class AnswerValidator:
             "questions": [q.model_dump() for q in questions],
             "answer_key": answer_key,
             "student_responses": responses,
+            "topic_stats": {
+                t: state.topic_stats[t].model_dump()
+                for q in questions
+                for t in q.topics
+                if t in state.topic_stats
+            }
         }
 
         message = await self.client.messages.create(
@@ -821,14 +956,25 @@ class AnswerValidator:
             tool_choice={"type": "tool", "name": "submit_grading"},
             messages=[{
                 "role": "user",
-                "content": f"""You are grading a student's answers against an answer key.
+                "content": f"""You are grading a student's answer. For each topic on this question you evaluate the response based on:
+- score (0–1): How well the student demonstrated understanding of this topic.
+- confidence (0–1): How confident you are in your evaluation based on the response.
+- adaptation_signal (-1 to +1): Based only on this response, how much evidence is there that the student's future questions should become easier or harder?
 
-For FRQs: grade for conceptual/procedural correctness, not exact string match.
-Different variable names, equivalent algebraic forms, or alternate valid solution
-paths should NOT be penalized. Only dock points for actual errors in reasoning,
-method, or final result.
+-1.0
+Student failed fundamental concepts that should be secure.
 
-For MCQs: correct is binary (score 1.0 or 0.0).
+-0.5
+Student struggled with expected material.
+
+0.0
+Response matches expectations.
+
++0.5
+Student demonstrated strong understanding.
+
++1.0
+Student demonstrated mastery beyond what this question required.
 
 Data:
 {json.dumps(payload, indent=2)}
@@ -878,26 +1024,47 @@ away the full answer. If they're asking a concept question, explain clearly.""",
 # ---------------------------------------------------------------------------
 
 class DifficultyController:
-    def __init__(self, up_streak: int = 2, down_streak: int = 2):
-        self.up_streak = up_streak
-        self.down_streak = down_streak
+    def __init__(self):
+        ...
 
-    def update(self, state: SessionState, result: QuestionResult) -> SessionState:
-        if result.correct:
-            state.consecutive_correct += 1
-            state.consecutive_incorrect = 0
-            if state.consecutive_correct >= self.up_streak:
-                state.difficulty = min(5, state.difficulty + 1)
-                state.consecutive_correct = 0
-        else:
-            state.consecutive_incorrect += 1
-            state.consecutive_correct = 0
-            if state.consecutive_incorrect >= self.down_streak:
-                state.difficulty = max(1, state.difficulty - 1)
-                state.consecutive_incorrect = 0
+    def update(
+        self,
+        state: SessionState,
+        result: QuestionResult,
+        topics: list[str],
+    ) -> SessionState:
+        topic_map: dict[str, bool] = (
+            {topic_result.topic: topic_result for topic_result in result.topic_results}
+            if result.topic_results else {}
+        )
+
+        for topic in topics:
+            if topic not in state.topic_stats:
+                state.topic_stats[topic] = TopicStats(topic=topic)
+            stats = state.topic_stats[topic]
+            stats.attempts += 1
+            topic_result = topic_map.get(topic)
+
+            if topic_result:
+                correct = topic_result.correct
+                delta = self.compute_delta(
+                    stats,
+                    topic_result
+                )
+            else:
+                correct = result.correct
+                delta = 0
+
+            if correct:
+                stats.correct += 1
+
+            stats.difficulty = max(1, min(5, stats.difficulty + delta))
 
         state.history.append(result)
         return state
+
+    def compute_delta(self):
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -916,33 +1083,38 @@ class SessionStore:
             self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
             self.db.table("answer_attempts").select("*").eq("session_id", session_id).execute(),
         )
+        raw_stats = row_res.data.get("topic_stats", {})
+        topic_stats = {t: TopicStats(**s) for t, s in raw_stats.items()}
+        label=row_res.data["label"],
+        current_question_index=row_res.data["current_question_index"],
+
         return SessionState(
             session_id=session_id,
+            label=label,
+            current_question_index=current_question_index,
+            topic_stats=topic_stats,
             questions=[Question(**q) for q in questions_res.data],
             chat_history=list(reversed(chat_res.data)),
             history=[QuestionResult(**h) for h in history_res.data],
-            **{k: row_res.data[k] for k in (
-                "topics", "difficulty", "consecutive_correct",
-                "consecutive_incorrect", "current_question_index"
-            )}
         )
 
-    async def get_or_create(self, session_id: UUID, topics: list[str]) -> SessionState:
+    async def get_or_create(self, session_id: UUID, label: str) -> SessionState:
         try:
             return await self.get(session_id)
         except Exception:
             await self.db.table("sessions").insert({
                 "session_id": session_id,
-                "topics": topics,
+                "label": label,
+                "topic_stats": {},
             }).execute()
-            return SessionState(session_id=session_id, topics=topics)
+            return SessionState(session_id=session_id, label=label)
 
     async def save(self, session_id: UUID, state: SessionState) -> None:
         await self.db.table("sessions").update({
-            "difficulty": state.difficulty,
-            "consecutive_correct": state.consecutive_correct,
-            "consecutive_incorrect": state.consecutive_incorrect,
             "current_question_index": state.current_question_index,
+            "topic_stats": {
+                t: s.model_dump() for t, s in state.topic_stats.items()
+            },
             "last_active_at": "now()",
         }).eq("session_id", session_id).execute()
 
@@ -1031,10 +1203,11 @@ async def get_storage_manager(supabase: AsyncClient = Depends(get_supabase)) -> 
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
 async def upload(
     session_id: UUID,
-    topics: list[str] = Form(...),
+    label: str,
     file: UploadFile = File(...),
     pdf_processor: AsyncPDFProcessor = Depends(get_pdf_processor),
     image_filter: ImageFilter = Depends(get_image_filter),
@@ -1042,7 +1215,7 @@ async def upload(
     concept_extractor: ConceptExtractor = Depends(get_concept_extractor),
     storage_manager: StorageManager = Depends(get_storage_manager),
     session_store: SessionStore = Depends(get_session_store),
-):
+):  
     pdf_bytes = await file.read()
 
     # extract
@@ -1065,22 +1238,13 @@ async def upload(
     )
 
     # create session row so generate endpoint can reference it
-    await session_store.get_or_create(session_id, topics=topics)
+    await session_store.get_or_create(session_id, label=label)
 
     return UploadResponse(
         session_id=session_id,
         content=content,
         raw_markdown=markdown,
-        images=[
-            ImageInput(
-                filename=img["filename"],
-                url=img["url"],
-                content_type=img["content_type"],
-            )
-            for img in filtered_images
-        ],
         image_descriptions=descriptions,
-        raw_images=stored_images,   # storage_path present, url stripped
         pdf_path=pdf_path,
     )
 
@@ -1093,12 +1257,16 @@ async def generate(
     session_store: SessionStore = Depends(get_session_store),
     storage_manager: StorageManager = Depends(get_storage_manager),
 ):
+    state = await session_store.get_or_create(session_id, label=req.label)
+    profile = state.topic_profile() if state.topic_stats else req.topic_profile
+    raw_images = await storage_manager.list_images(session_id)
+
     result = await question_generator.generate_questions(
-        req.content, req.raw_images, req.image_descriptions, storage_manager
+        req.content, raw_images, req.image_descriptions, storage_manager, profile
     )
 
     if result.status == GenerationStatus.GENERATED:
-        state = await session_store.get_or_create(session_id, topics=req.topics)
+        state = await session_store.get_or_create(session_id, label=req.label)
         state.questions = result.questions
         await session_store.save(session_id, state)
 
@@ -1109,7 +1277,6 @@ async def generate(
             content=req.content,
             raw_markdown=req.raw_markdown,
             image_descriptions=req.image_descriptions,
-            raw_images=req.raw_images,
             pdf_path=req.pdf_path,
         )
 
@@ -1142,15 +1309,22 @@ async def submit_answer(
     except Exception:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
+    # get topics from the question being answered
+    question = next(
+        (q for q in state.questions if q.question_id == req.question_id), None
+    )
+    if question is None:
+        raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
+
     result = await answer_validator.validate_answers(
-        [{"question_id": req.question_id, "response": req.response}],
-        state.questions,
+        responses=[{"question_id": req.question_id, "response": req.response}],
+        questions=[question],
+        state=state,
     )
     question_result = result.results[0]
-    state = difficulty_controller.update(state, question_result)
+    state = difficulty_controller.update(state, question_result, question.topics)
     state.advance()
 
-    # save scalar state and persist the answer concurrently
     await asyncio.gather(
         session_store.save(session_id, state),
         session_store.append_answer(session_id, req.response, question_result),
@@ -1159,7 +1333,7 @@ async def submit_answer(
     return AnswerResponse(
         feedback=question_result.feedback,
         score=question_result.score,
-        new_difficulty=state.difficulty,
+        topic_stats={t: state.topic_stats[t] for t in question.topics},
         misconception=question_result.misconception,
     )
 
@@ -1192,7 +1366,7 @@ async def chat(
 # main() kept for local pipeline testing only
 # ---------------------------------------------------------------------------
 
-async def main():
+"""async def main():
     pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()
 
     processor = AsyncPDFProcessor()
@@ -1212,4 +1386,4 @@ async def main():
     print(prompt_str[:500])
 
 
-asyncio.run(main())
+asyncio.run(main())"""

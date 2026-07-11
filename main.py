@@ -119,7 +119,7 @@ class QuestionValidationResult(BaseModel):
 
 class TopicStats(BaseModel):
     topic: str
-    difficulty: float = 3.0
+    target_level: float = 3.0
     attempts: int = 0
     proficiency: float = 0.0
     confidence: float = 0.0
@@ -178,7 +178,7 @@ class SessionState(BaseModel):
         stats = [self.topic_stats[t] for t in topics if t in self.topic_stats]
         if not stats:
             return 3.0
-        return round(sum(s.difficulty for s in stats) / len(stats), 1)
+        return round(sum(s.target_level for s in stats) / len(stats), 1)
 
     def topic_profile(self, min_attempts: int = 2) -> dict:
         strong, weak, unseen = [], [], []
@@ -393,34 +393,40 @@ ANSWER_VALIDATION_TOOL = {
                                 "properties": {
                                     "topic": {"type": "string"},
                                     "correct": {"type": "boolean"},
-                                    "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
-                                    "difficulty_delta": {
+                                    "confidence": {
+                                        "type": "number",
+                                        "description": "0.0 to 1.0 — how certain you are in this topic grade given the student's response."
+                                    },
+                                    "adaptation_signal": {
                                         "type": "number",
                                         "description": (
-                                            "Recommended difficulty adjustment for this topic as a float between -1.0 and 1.0.\n"
-                                            "Use the full range rather than snapping to integers:\n"
-                                            "-1.0: severe regression — missed fundamentals well below current difficulty.\n"
-                                            "-0.5: moderate struggle — got partial credit but key rubric points missed.\n"
-                                            "-0.25: minor stumble — mostly correct but shows a small gap at current level.\n"
-                                            " 0.0: performance matches current difficulty — no change warranted.\n"
-                                            "+0.25: solid performance — met all rubric points cleanly at current difficulty.\n"
-                                            "+0.5: strong performance — exceeded rubric expectations at current difficulty.\n"
-                                            "+1.0: exceptional — demonstrated mastery well above current difficulty level."
+                                            "Directional evidence for difficulty adjustment, -1.0 to +1.0. "
+                                            "This is your read on the student's ability relative to this topic's current difficulty — "
+                                            "not a delta computation. The difficulty controller will weigh this against history.\n"
+                                            "-1.0: student appears well below current difficulty on this topic.\n"
+                                            " 0.0: performance matches expectations.\n"
+                                            "+1.0: student appears well above current difficulty on this topic."
                                         ),
                                     },
+                                    "misconception": {
+                                        "type": ["string", "null"],
+                                        "description": "Short tag for a recurring error type specific to this topic if identifiable, else null."
+                                    },
+                                    "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
                                 },
-                                "required": ["topic", "correct", "feedback", "difficulty_delta"]
                             },
-                            "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
+                            "required": ["topic", "score", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
                         },
+                        "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
                     },
-                    "required": ["question_id", "score", "correct", "feedback", "topic_results"]
-                }
+                },
+                "required": ["question_id", "score", "correct", "feedback", "topic_results"]
             }
-        },
-        "required": ["results"]
-    }
+        }
+    },
+    "required": ["results"]
 }
+
 
 
 # ---------------------------------------------------------------------------
@@ -431,21 +437,15 @@ class StorageManager:
     def __init__(self, supabase: AsyncClient):
         self.db = supabase
     
-    async def list_images(self, session_id: UUID) -> list[str]:
-        response = await self.db.storage.from_("generation-images").list(str(session_id))
-        return [
-            {
-                "storage_path": f"{session_id}/{item['name']}",
-                "filename": item["name"],
-                "content_type": item.get(
-                    "metadata", {}
-                ).get(
-                    "mimetype",
-                    "image/png"
-                ),
-            }
-            for item in response
-        ]
+    async def list_images(self, session_id: UUID) -> list[dict]:
+        response = await (
+            self.db.table("generation_images")
+            .select("*")
+            .eq("session_id", str(session_id))
+            .execute()
+        )
+
+        return response.data
 
     async def store_pdf(self, session_id: UUID, pdf_bytes: bytes) -> str:
         path = f"{session_id}/document.pdf"
@@ -478,7 +478,7 @@ class StorageManager:
             print(f"Failed to download image {storage_path}: {e}")
             return None
 
-    async def store_images(self, session_id: UUID, images: list[dict]) -> list[dict]:
+    async def store_images(self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]) -> list[dict]:
         async with httpx.AsyncClient() as http_client:
             async def fetch_and_store(img: dict) -> dict | None:
                 try:
@@ -491,13 +491,22 @@ class StorageManager:
                         file=response.content,
                         file_options={"content-type": img.get("content_type", "image/png")},
                     )
+
+                    await self.db.table("generation_images").insert({
+                        "session_id": str(session_id),
+                        "storage_path": path,
+                        "filename": img["filename"],
+                        "content_type": img.get("content_type", "image/png"),
+                        "description": image_descriptions.get(img["filename"]),
+                    }).execute()
                     return {
                         **{k: v for k, v in img.items() if k != "url"},
                         "storage_path": path,
+                        "description": image_descriptions.get(img["filename"]),
                     }
                 except Exception as e:
-                    print(f"Failed to store image {img.get('filename')}: {e}")
-                    return None
+                    await self.db.storage.from_("generation-images").remove([path])
+                    raise
 
             results = await asyncio.gather(*(fetch_and_store(img) for img in images))
             return [r for r in results if r is not None]
@@ -918,8 +927,8 @@ class QuestionGenerator:
 # ---------------------------------------------------------------------------
 
 class AnswerValidator:
-    def __init__(self):
-        self.client = AsyncAnthropic()
+    def __init__(self, client):
+        self.client = client
 
     async def validate_answers(
         self,
@@ -988,8 +997,8 @@ Data:
 
 
 class StudyChatAssistant:
-    def __init__(self):
-        self.client = AsyncAnthropic()
+    def __init__(self, client):
+        self.client = client
 
     async def respond(self, user_message: str, session_context: SessionContext) -> str:
         question_context = (
@@ -1234,7 +1243,7 @@ async def upload(
     # this before returning; storage_path replaces url in raw_images
     pdf_path, stored_images = await asyncio.gather(
         storage_manager.store_pdf(session_id, pdf_bytes),
-        storage_manager.store_images(session_id, filtered_images),
+        storage_manager.store_images(session_id, filtered_images, descriptions),
     )
 
     # create session row so generate endpoint can reference it

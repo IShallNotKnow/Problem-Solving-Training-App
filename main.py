@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Form, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from anthropic import AsyncAnthropic
 from llama_cloud import AsyncLlamaCloud
@@ -9,7 +9,7 @@ import asyncio
 import httpx
 import base64
 import json
-from typing import Literal, Annotated
+from typing import Literal
 from enum import Enum
 from pydantic import BaseModel, HttpUrl, model_validator, Field
 from uuid import UUID
@@ -98,9 +98,11 @@ class TopicResult(BaseModel):
 
 class TopicUpdate(BaseModel):
     topic: str
-    previous_difficulty: float
-    new_difficulty: float
-    delta: float
+    previous_elo: float
+    new_elo: float
+    elo_delta: float
+    previous_p_known: float
+    new_p_known: float
     reason: str
 
 class QuestionResult(BaseModel):
@@ -109,6 +111,7 @@ class QuestionResult(BaseModel):
     correct: bool
     feedback: str
     topic_results: list[TopicResult] = Field(default_factory=list)
+    misconception: str | None = None
 
 
 class QuestionValidationResult(BaseModel):
@@ -119,33 +122,24 @@ class QuestionValidationResult(BaseModel):
 
 class TopicStats(BaseModel):
     topic: str
-    target_level: float = 3.0
     attempts: int = 0
-    proficiency: float = 0.0
-    confidence: float = 0.0
+    elo: float = 800.0
+    p_known: float = 0.5
     recent_history: list[float] = Field(default_factory=list)
 
 
 class TopicEvidence(BaseModel):
     topic: str
-    score: float
-    confidence: float
-    proficiency_signal: float
+    expected_score: float
+    actual_score: float
+    elo_delta: float
+    p_obs: float
+    adaptation_signal: float
     misconception: str | None
-    feedback: str
 
 
 class AnswerValidationResult(BaseModel):
     results: list[QuestionResult]
-    avg_score: float = 0.0
-
-    @model_validator(mode="after")
-    def compute_avg_score(self) -> "AnswerValidationResult":
-        self.avg_score = (
-            sum(r.score for r in self.results) / len(self.results)
-            if self.results else 0.0
-        )
-        return self
 
 
 class GenerationResult(BaseModel):
@@ -173,18 +167,18 @@ class SessionState(BaseModel):
     def advance(self) -> None:
         self.current_question_index += 1
 
-    def get_topic_difficulty(self, topics: list[str]) -> int:
+    def get_topic_elo(self, topics: list[str]) -> int:
         """Average difficulty across the question's topics, default 3."""
         stats = [self.topic_stats[t] for t in topics if t in self.topic_stats]
         if not stats:
-            return 3.0
-        return round(sum(s.target_level for s in stats) / len(stats), 1)
+            return 800.0
+        return round(sum(s.elo for s in stats) / len(stats), 1)
 
     def topic_profile(self, min_attempts: int = 2) -> dict:
         strong, weak, unseen = [], [], []
         for topic, stats in self.topic_stats.items():
             if stats.attempts >= min_attempts:
-                if stats.proficiency >= 0.7:
+                if stats.p_known >= 0.7:
                     strong.append(topic)
                 else:
                     weak.append(topic)
@@ -215,8 +209,8 @@ class GenerateRequest(BaseModel):
     label: str
     content: str
     raw_markdown: str = ""
-    image_descriptions: dict[str, str] = {}
     pdf_path: str = ""
+    image_descriptions: dict[str, str] = Field(default_factory=dict)
     topics: list[str]
     topic_profile: dict | None = None
 
@@ -234,6 +228,7 @@ class AnswerResponse(BaseModel):
     feedback: str
     score: float
     topic_stats: dict[str, TopicStats]
+    topic_updates: list[TopicUpdate]
     misconception: str | None = None
 
 
@@ -248,7 +243,6 @@ class UploadResponse(BaseModel):
     raw_markdown: str
     image_descriptions: dict[str, str]
     pdf_path: str
-    topics_added: list[str] 
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -274,10 +268,10 @@ QUESTION_GENERATION_TOOL = {
                             "enum": ["MCQ", "FRQ"]
                         },
                         "difficulty": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 5,
-                            "description": "1 = recall/definition level, 5 = multi-step application requiring synthesis of several concepts."
+                            "type": "number",
+                            "minimum": 300,
+                            "maximum": 3000,
+                            "description": "Target ELO difficulty for this question. 300=novice recall, 1650=intermediate application, 3000=expert synthesis."
                         },
                         "topics": {
                             "type": "array",
@@ -415,7 +409,7 @@ ANSWER_VALIDATION_TOOL = {
                                     "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
                                 },
                             },
-                            "required": ["topic", "score", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
+                            "required": ["topic", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
                         },
                         "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
                     },
@@ -441,7 +435,7 @@ class StorageManager:
         response = await (
             self.db.table("generation_images")
             .select("*")
-            .eq("session_id", str(session_id))
+            .eq("session_id", session_id)
             .execute()
         )
 
@@ -461,7 +455,7 @@ class StorageManager:
             session = (
                 await self.db.table("sessions")
                 .select("id")
-                .eq("id", str(session_id))
+                .eq("id", session_id)
                 .maybe_single()
                 .execute()
             )
@@ -481,6 +475,7 @@ class StorageManager:
     async def store_images(self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]) -> list[dict]:
         async with httpx.AsyncClient() as http_client:
             async def fetch_and_store(img: dict) -> dict | None:
+                path = None
                 try:
                     response = await http_client.get(img["url"])
                     if response.status_code != 200:
@@ -493,7 +488,7 @@ class StorageManager:
                     )
 
                     await self.db.table("generation_images").insert({
-                        "session_id": str(session_id),
+                        "session_id": session_id,
                         "storage_path": path,
                         "filename": img["filename"],
                         "content_type": img.get("content_type", "image/png"),
@@ -505,7 +500,8 @@ class StorageManager:
                         "description": image_descriptions.get(img["filename"]),
                     }
                 except Exception as e:
-                    await self.db.storage.from_("generation-images").remove([path])
+                    if path:
+                        await self.db.storage.from_("generation-images").remove([path])
                     raise
 
             results = await asyncio.gather(*(fetch_and_store(img) for img in images))
@@ -575,9 +571,9 @@ class AsyncPDFProcessor:
 # ---------------------------------------------------------------------------
 
 class ImageFilter:
-    def __init__(self):
+    def __init__(self, client):
         self.exclude_categories = {"logo", "icon", "banner", "header", "footer"}
-        self.client = AsyncAnthropic()
+        self.client = client
 
     async def heuristic_filter(self, images: list[dict]) -> list[dict]:
         if not images:
@@ -716,8 +712,8 @@ class ConceptExtractor:
 # ---------------------------------------------------------------------------
 
 class QuestionValidator:
-    def __init__(self):
-        self.client = AsyncAnthropic()
+    def __init__(self, client):
+        self.client = client
 
     async def validate_questions(
         self,
@@ -748,7 +744,7 @@ For each question assess:
 - Relevance: is it directly testable from the content?
 - Depth: does it test understanding or problem-solving rather than rote recall?
 - Clarity: is it unambiguous and self-contained without needing the original material?
-- Difficulty accuracy: does the actual difficulty match its stated `difficulty` (1-5)?
+- Difficulty accuracy: does the actual difficulty match its stated `difficulty` (300-3000)?
 - MCQ only: are `choices` plausible distractors, with exactly one correct option at `correct_choice_index`?
 - FRQ only: do `rubric_points` fully capture what a correct answer must contain?
 
@@ -776,9 +772,9 @@ Questions (full generated objects, including answers and rubrics):
 
 
 class QuestionGenerator:
-    def __init__(self, client, validator):
+    def __init__(self, client):
         self.client = client
-        self.question_validator = validator
+        self.question_validator = QuestionValidator(client)
 
     async def _build_image_block(self, image_bytes: bytes, content_type: str) -> dict:
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
@@ -1034,46 +1030,78 @@ away the full answer. If they're asking a concept question, explain clearly.""",
 
 class DifficultyController:
     def __init__(self):
-        ...
+        self.K_BASE = 32.0
+        self.MAX_ADAPTATION_INFLUENCE = 50.0
 
-    def update(
-        self,
-        state: SessionState,
-        result: QuestionResult,
-        topics: list[str],
-    ) -> SessionState:
-        topic_map: dict[str, bool] = (
-            {topic_result.topic: topic_result for topic_result in result.topic_results}
-            if result.topic_results else {}
+    def clamp(self, value, min_val, max_val):
+        return max(min_val, min(max_val, value))
+    
+    def compute_evidence(self, tr: TopicResult, stats: TopicStats, question_difficulty: float) -> TopicEvidence:
+        adaptation_contribution = tr.adaptation_signal * self.MAX_ADAPTATION_INFLUENCE * tr.confidence
+
+        actual_score = tr.score
+        expected_score = 1/(1 + 10 ** ((question_difficulty - stats.elo) / 400))
+        p_obs =  tr.confidence * tr.score + (1 - tr.confidence) * 0.5
+        K = self.K_BASE * tr.confidence * (0.5 + 0.5 * stats.p_known)
+        elo_delta = K * (actual_score - expected_score) + adaptation_contribution
+        return TopicEvidence(
+            topic=tr.topic,
+            expected_score=expected_score,
+            actual_score=actual_score,
+            elo_delta=elo_delta,
+            p_obs=p_obs,
+            adaptation_signal=tr.adaptation_signal,
+            misconception=tr.misconception,
         )
 
-        for topic in topics:
-            if topic not in state.topic_stats:
-                state.topic_stats[topic] = TopicStats(topic=topic)
-            stats = state.topic_stats[topic]
+    def compute_elo_update(self, stats: TopicStats, evidence: TopicEvidence) -> float:
+        return self.clamp(stats.elo + evidence.elo_delta, 300, 3000)
+
+    def compute_bkt_update(self, stats: TopicStats, evidence: TopicEvidence) -> float:
+        P_SLIP = 0.1
+        P_GUESS = 0.1
+        P_LEARN = 0.1
+
+        p_known = stats.p_known
+        p_correct = p_known * (1-P_SLIP) + (1-p_known) * P_GUESS
+        p_if_correct = (p_known * (1-P_SLIP))/p_correct
+        p_if_incorrect = ((p_known*P_SLIP))/(p_known*P_SLIP + (1-p_known) * (1-P_GUESS))
+
+        p_known_updated = evidence.p_obs * p_if_correct + (1 - evidence.p_obs) * p_if_incorrect
+        return p_known_updated + (1 - p_known_updated) * P_LEARN
+
+    def compute_topic_update(self, stats: TopicStats, evidence: TopicEvidence) -> TopicUpdate:
+        new_p_known = self.compute_bkt_update(stats, evidence)
+        new_elo = self.compute_elo_update(stats, evidence)
+
+        return TopicUpdate(
+            topic=evidence.topic,
+            previous_elo=stats.elo,
+            new_elo=new_elo,
+            elo_delta=evidence.elo_delta,
+            previous_p_known=stats.p_known,
+            new_p_known=new_p_known,
+            reason=f"score={evidence.actual_score:.2f} expected={evidence.expected_score:.2f} confidence={evidence.p_obs:.2f}",
+        )
+
+
+    def update(self, state: SessionState, result: QuestionResult, question: Question) -> tuple[SessionState, list[TopicUpdate]]:
+        updates = []
+        for tr in result.topic_results:
+            if tr.topic not in state.topic_stats:
+                state.topic_stats[tr.topic] = TopicStats(topic=tr.topic)
+            stats = state.topic_stats[tr.topic]
+
+            evidence = self.compute_evidence(tr, stats, question.difficulty)
+            topic_update = self.compute_topic_update(stats, evidence)
+
+            stats.elo = topic_update.new_elo
+            stats.p_known = topic_update.new_p_known
             stats.attempts += 1
-            topic_result = topic_map.get(topic)
-
-            if topic_result:
-                correct = topic_result.correct
-                delta = self.compute_delta(
-                    stats,
-                    topic_result
-                )
-            else:
-                correct = result.correct
-                delta = 0
-
-            if correct:
-                stats.correct += 1
-
-            stats.difficulty = max(1, min(5, stats.difficulty + delta))
+            updates.append(topic_update)
 
         state.history.append(result)
-        return state
-
-    def compute_delta(self):
-        ...
+        return state, updates
 
 
 # ---------------------------------------------------------------------------
@@ -1090,12 +1118,12 @@ class SessionStore:
             self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
             self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
             self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
-            self.db.table("answer_attempts").select("*").eq("session_id", session_id).execute(),
+            self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
         )
         raw_stats = row_res.data.get("topic_stats", {})
         topic_stats = {t: TopicStats(**s) for t, s in raw_stats.items()}
-        label=row_res.data["label"],
-        current_question_index=row_res.data["current_question_index"],
+        label=row_res.data["label"]
+        current_question_index=row_res.data["current_question_index"]
 
         return SessionState(
             session_id=session_id,
@@ -1126,6 +1154,18 @@ class SessionStore:
             },
             "last_active_at": "now()",
         }).eq("session_id", session_id).execute()
+
+        await self.db.table("questions").delete().eq("session_id", str(session_id)).execute()
+
+        if state.questions:
+            await self.db.table("questions").insert([
+                {
+                    **q.model_dump(),
+                    "session_id": str(session_id),
+                    "position": i,
+                }
+                for i, q in enumerate(state.questions)
+            ]).execute()
 
     async def append_answer(
         self,
@@ -1177,11 +1217,14 @@ class SessionStore:
 # they receive the AsyncClient which is created once in lifespan
 # ---------------------------------------------------------------------------
 
+def get_anthropic_client() -> AsyncAnthropic:
+    return AsyncAnthropic()
+
 def get_pdf_processor() -> AsyncPDFProcessor:
     return AsyncPDFProcessor()
 
-def get_image_filter() -> ImageFilter:
-    return ImageFilter()
+def get_image_filter(client: AsyncAnthropic = Depends(get_anthropic_client)) -> ImageFilter:
+    return ImageFilter(client)
 
 def get_text_filter() -> TextFilter:
     return TextFilter()
@@ -1189,17 +1232,17 @@ def get_text_filter() -> TextFilter:
 def get_concept_extractor() -> ConceptExtractor:
     return ConceptExtractor()
 
-def get_question_generator() -> QuestionGenerator:
-    return QuestionGenerator()
+def get_question_generator(client: AsyncAnthropic = Depends(get_anthropic_client)) -> QuestionGenerator:
+    return QuestionGenerator(client)
 
-def get_answer_validator() -> AnswerValidator:
-    return AnswerValidator()
+def get_answer_validator(client: AsyncAnthropic = Depends(get_anthropic_client)) -> AnswerValidator:
+    return AnswerValidator(client)
 
 def get_difficulty_controller() -> DifficultyController:
     return DifficultyController()
 
-def get_study_chat_assistant() -> StudyChatAssistant:
-    return StudyChatAssistant()
+def get_study_chat_assistant(client: AsyncAnthropic = Depends(get_anthropic_client)) -> StudyChatAssistant:
+    return StudyChatAssistant(client)
 
 async def get_session_store(supabase: AsyncClient = Depends(get_supabase)) -> SessionStore:
     return SessionStore(supabase)
@@ -1285,6 +1328,7 @@ async def generate(
             session_id=session_id,
             content=req.content,
             raw_markdown=req.raw_markdown,
+            raw_images=raw_images,
             image_descriptions=req.image_descriptions,
             pdf_path=req.pdf_path,
         )
@@ -1331,7 +1375,7 @@ async def submit_answer(
         state=state,
     )
     question_result = result.results[0]
-    state = difficulty_controller.update(state, question_result, question.topics)
+    state, updates = difficulty_controller.update(state, question_result, question)
     state.advance()
 
     await asyncio.gather(
@@ -1339,10 +1383,13 @@ async def submit_answer(
         session_store.append_answer(session_id, req.response, question_result),
     )
 
+    await session_store.append_topic_updates(session_id, question_result.question_id, updates)
+
     return AnswerResponse(
         feedback=question_result.feedback,
         score=question_result.score,
         topic_stats={t: state.topic_stats[t] for t in question.topics},
+        topic_updates=updates,
         misconception=question_result.misconception,
     )
 
@@ -1369,30 +1416,3 @@ async def chat(
     )
 
     return ChatResponse(reply=reply, current_question_index=state.current_question_index)
-
-
-# ---------------------------------------------------------------------------
-# main() kept for local pipeline testing only
-# ---------------------------------------------------------------------------
-
-"""async def main():
-    pdf_bytes = Path("test_files/002-shortest-paths-1.pdf").read_bytes()
-
-    processor = AsyncPDFProcessor()
-    markdown, items, images = await processor.extract(pdf_bytes)
-
-    image_filter = ImageFilter()
-    filtered_images = await image_filter.heuristic_filter(images)
-    filtered_images, descriptions = await image_filter.semantic_filter(filtered_images, markdown)
-
-    text_filter = TextFilter()
-    filtered_items = await text_filter.item_filter(items)
-
-    concept_extractor = ConceptExtractor()
-    scored_pages = await concept_extractor.score_pages(filtered_items)
-    prompt_str = await concept_extractor.prioritize_content(filtered_items, scored_pages)
-
-    print(prompt_str[:500])
-
-
-asyncio.run(main())"""

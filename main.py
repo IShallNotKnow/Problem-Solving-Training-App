@@ -75,6 +75,8 @@ class Question(BaseModel):
 
     @model_validator(mode="after")
     def validate_question_type(self) -> "Question":
+        if not (300 <= self.difficulty <= 3000):
+            raise ValueError(f"{self.question_id}: difficulty must be between 300 and 3000")
         if self.question_type == "MCQ":
             if not self.choices or len(self.choices) < 3:
                 raise ValueError(f"{self.question_id}: MCQ requires >=3 choices")
@@ -386,6 +388,12 @@ ANSWER_VALIDATION_TOOL = {
                                 "type": "object",
                                 "properties": {
                                     "topic": {"type": "string"},
+                                    "score": {
+                                        "type": "number",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0,
+                                        "description": "0.0 to 1.0 — how well the student demonstrated understanding of this specific topic, independent of the question-level score."
+                                    },
                                     "correct": {"type": "boolean"},
                                     "confidence": {
                                         "type": "number",
@@ -408,8 +416,8 @@ ANSWER_VALIDATION_TOOL = {
                                     },
                                     "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
                                 },
+                                "required": ["topic", "score", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
                             },
-                            "required": ["topic", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
                         },
                         "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
                     },

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 import asyncio
+from collections import defaultdict
 import httpx
 import base64
 import json
@@ -20,6 +21,7 @@ load_dotenv()
 
 SUPABASE_URL: str = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY")
+_session_locks: defaultdict[UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 MAX_CONTENT_CHARS = 12_000
 
@@ -169,7 +171,7 @@ class SessionState(BaseModel):
     def advance(self) -> None:
         self.current_question_index += 1
 
-    def get_topic_elo(self, topics: list[str]) -> int:
+    def get_topic_elo(self, topics: list[str]) -> float:
         """Average difficulty across the question's topics, default 3."""
         stats = [self.topic_stats[t] for t in topics if t in self.topic_stats]
         if not stats:
@@ -201,18 +203,10 @@ class SessionContext(BaseModel):
         )
 
 
-class ImageInput(BaseModel):
-    filename: str
-    url: HttpUrl
-    content_type: str = "image/png"
-
-
 class GenerateRequest(BaseModel):
     label: str
-    content: str
     raw_markdown: str = ""
     pdf_path: str = ""
-    image_descriptions: dict[str, str] = Field(default_factory=dict)
     topics: list[str]
     topic_profile: dict | None = None
 
@@ -243,7 +237,6 @@ class UploadResponse(BaseModel):
     session_id: UUID
     content: str
     raw_markdown: str
-    image_descriptions: dict[str, str]
     pdf_path: str
 
 # ---------------------------------------------------------------------------
@@ -694,25 +687,47 @@ class ConceptExtractor:
             page_scores[page] = page_scores.get(page, 0) + weight
         return page_scores
 
-    async def prioritize_content(self, items: list[dict], page_scores: dict[int, float]) -> str:
+    async def prioritize_content(self, items: list[dict], page_scores: dict[int, float]) -> str | None:
         sorted_pages = sorted(page_scores, key=page_scores.get, reverse=True)
+        
+        page_items_map = {
+            page: [i for i in items if i["page"] == page]
+            for page in sorted_pages
+        }
+        
+        must_have = [
+            p for p in sorted_pages
+            if any(i.get("type") in self.ALWAYS_INCLUDE for i in page_items_map[p])
+        ]
+        optional = [
+            p for p in sorted_pages
+            if p not in must_have and page_scores[p] > 3.0
+        ]
 
         result = []
         total = 0
-        for page in sorted_pages:            
-            page_items = [i for i in items if i["page"] == page]
-            score = page_scores[page]
-            has_priority_item = any(i.get("type") in self.ALWAYS_INCLUDE for i in page_items)
+        seen = set()
 
-            if score > 3.0 or has_priority_item:
-                page_text = "\n".join(i["md"] for i in page_items if i.get("md"))
-                label = "[HIGH PRIORITY]" if score > 3.0 else "[CONTAINS KEY CONTENT]"
-                if total + len(page_text) > MAX_CONTENT_CHARS:
-                    break
-                result.append(f"{label} page {page}\n{page_text}")
-                total += len(page_text)
-            
-        return "\n\n".join(result)
+        for page in must_have + optional:
+            if page in seen:
+                continue
+            seen.add(page)
+
+            page_text = "\n".join(i["md"] for i in page_items_map[page] if i.get("md"))
+            if not page_text:
+                continue
+
+            if total + len(page_text) > MAX_CONTENT_CHARS:
+                remaining = MAX_CONTENT_CHARS - total
+                page_text = page_text[:remaining]
+                result.append(f"[TRUNCATED] page {page}\n{page_text}")
+                break
+
+            label = "[HIGH PRIORITY]" if page_scores[page] > 3.0 else "[CONTAINS KEY CONTENT]"
+            result.append(f"{label} page {page}\n{page_text}")
+            total += len(page_text)
+
+        return "\n\n".join(result) or None
 
 
 # ---------------------------------------------------------------------------
@@ -727,16 +742,16 @@ class QuestionValidator:
         self,
         questions: list[Question],
         content: str,
-        image_descriptions: dict[str, str] | None = None,
+        raw_images: list[dict] | None,
     ) -> list[QuestionValidationResult]:
         if not questions:
             return []
 
-        descriptions_block = ""
-        if image_descriptions:
-            descriptions_block = "\n\nImage descriptions:\n" + "\n".join(
-                f"- {filename}: {desc}" for filename, desc in image_descriptions.items()
-            )
+        descriptions_block = "\n\nImage descriptions:\n" + "\n".join(
+            f"- {img['filename']}: {img['description']}"
+            for img in raw_images
+            if img.get("description")
+        )
 
         message = await self.client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -799,8 +814,8 @@ class QuestionGenerator:
         self,
         content: str,
         raw_images: list[dict],
-        image_descriptions: dict[str, str],
         storage_manager: StorageManager,
+        session_id: UUID,
         topic_profile: dict | None = None,
     ) -> GenerationResult:
         
@@ -834,12 +849,16 @@ class QuestionGenerator:
         }]
 
         image_bytes_list = await asyncio.gather(
-            *(storage_manager.download_image(img["storage_path"]) for img in raw_images)
+            *(
+                storage_manager.download_image(session_id, path)
+                for img in raw_images
+                for path in (img["storage_path"],)
+            )
         )
         for i, (img, image_bytes) in enumerate(zip(raw_images, image_bytes_list), start=1):
             if image_bytes is not None:
                 message_content.append(await self._build_image_block(image_bytes, img.get("content_type", "image/png")))
-            description = image_descriptions.get(img["filename"])
+            description = img.get("description")
             if description:
                 message_content.append({"type": "text", "text": f"Image {i} description:\n{description}"})
 
@@ -895,7 +914,7 @@ class QuestionGenerator:
 
             # validate only the new batch
             new_validation = await self.question_validator.validate_questions(
-                new_questions, content, image_descriptions
+                new_questions, content, raw_images
             )
 
             # split into approved and rejected
@@ -919,6 +938,7 @@ class QuestionGenerator:
 
             attempts += 1
 
+        #a max of 20 questions, less are approved though
         all_approved = len(approved_questions) == 20
         return GenerationResult(
             status=GenerationStatus.GENERATED if all_approved else GenerationStatus.FAILED_VALIDATION,
@@ -946,9 +966,15 @@ class AnswerValidator:
             raise ValueError(f"Responses reference unknown question_ids: {unknown}")
 
         answer_key = next(
-            {"question_id": q.question_id, "correct_answer": q.correct_answer, "rubric_points": q.rubric_points}
-            for q in questions if q.question_id == responses[0]["question_id"]
+            (
+                {"question_id": q.question_id, "correct_answer": q.correct_answer, "rubric_points": q.rubric_points}
+                for q in questions if q.question_id == responses[0]["question_id"]
+            ),
+            None,
         )
+
+        if answer_key is None:
+            raise ValueError(f"Question {responses[0]['question_id']} not found in provided questions")
 
         payload = {
             "questions": [q.model_dump() for q in questions],
@@ -1140,7 +1166,7 @@ class SessionStore:
             topic_stats=topic_stats,
             questions=[Question(**q) for q in questions_res.data],
             chat_history=list(reversed(chat_res.data)),
-            history=[QuestionResult(**h) for h in history_res.data],
+            history=list(reversed([QuestionResult(**h) for h in history_res.data])),
         )
 
     async def get_or_create(self, session_id: UUID, label: str) -> SessionState:
@@ -1163,16 +1189,16 @@ class SessionStore:
             "last_active_at": "now()",
         }).eq("session_id", session_id).execute()
 
+    async def replace_questions(self, session_id: UUID, questions: list[Question]) -> None:
         await self.db.table("questions").delete().eq("session_id", str(session_id)).execute()
-
-        if state.questions:
+        if questions:
             await self.db.table("questions").insert([
                 {
                     **q.model_dump(),
                     "session_id": str(session_id),
                     "position": i,
                 }
-                for i, q in enumerate(state.questions)
+                for i, q in enumerate(questions)
             ]).execute()
 
     async def append_answer(
@@ -1191,11 +1217,16 @@ class SessionStore:
             "misconception": result.misconception,
         }).execute()
 
-    async def append_chat(self, session_id: UUID, role: str, content: str) -> None:
-        await self.db.table("chat_messages").insert({
-            "session_id": session_id,
-            "role": role,
-            "content": content,
+    async def append_chat_turn(
+        self, 
+        session_id: UUID, 
+        user_message: str, 
+        assistant_reply: str
+    ) -> None:
+        await self.db.rpc("append_chat_turn", {
+            "p_session_id": str(session_id),
+            "p_user_content": user_message,
+            "p_assistant_content": assistant_reply,
         }).execute()
 
     async def delete_chat(self, session_id: UUID) -> None:
@@ -1206,18 +1237,70 @@ class SessionStore:
         session_id: UUID,
         content: str,
         raw_markdown: str,
-        image_descriptions: dict[str, str],
         raw_images: list[dict],         # already stored; contain storage_path, no url
         pdf_path: str,
+        questions: list[Question],
     ) -> None:
+        topics_covered = list({t for q in questions for t in q.topics})
+
         await self.db.table("generation_inputs").insert({
             "session_id": session_id,
             "content": content,
             "raw_markdown": raw_markdown,
-            "image_descriptions": image_descriptions,
             "images": raw_images,
             "pdf_path": pdf_path,
+            "topics_covered": topics_covered
         }).execute()
+    
+    async def append_topic_updates(self, session_id: UUID, question_id: str, updates: list[TopicUpdate])  -> None:
+        await self.db.table("elo_history").insert([
+            {
+                "session_id": session_id,
+                "question_id": question_id,
+                "topic": update.topic,
+                "previous_elo": update.previous_elo,
+                "new_elo": update.new_elo,
+                "elo_delta": update.elo_delta,
+                "previous_p_known": update.previous_p_known,
+                "new_p_known": update.new_p_known,
+                "reason": update.reason,
+            }
+            for update in updates
+        ]).execute()
+    
+    async def get_relevant_profile(
+        self, 
+        session_id: UUID, 
+        state: SessionState
+    ) -> dict | None:
+        if not state.topic_stats:
+            return None
+            
+        # get all topics covered by previous generations
+        prev_generations = await (self.db.table("generation_inputs")
+            .select("topics_covered")
+            .eq("session_id", str(session_id))
+            .execute()
+        )
+        
+        all_previous_topics = {
+            t 
+            for gen in prev_generations.data 
+            for t in (gen.get("topics_covered") or [])
+        }
+        
+        # filter profile to only topics seen in previous generations
+        profile = state.topic_profile()
+        filtered = {
+            bucket: [t for t in topics if t in all_previous_topics]
+            for bucket, topics in profile.items()
+        }
+        
+        # if nothing overlaps, this is a genuinely new subject area
+        if not any(filtered.values()):
+            return None
+            
+        return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -1289,6 +1372,11 @@ async def upload(
     # prioritize
     scored_pages = await concept_extractor.score_pages(filtered_items)
     content = await concept_extractor.prioritize_content(filtered_items, scored_pages)
+    if content is None:
+        raise HTTPException(
+            status_code=422,
+            detail="No meaningful content could be extracted from this document."
+        )
 
     # store PDF and images concurrently — presigned URLs are ephemeral so do
     # this before returning; storage_path replaces url in raw_images
@@ -1304,7 +1392,6 @@ async def upload(
         session_id=session_id,
         content=content,
         raw_markdown=markdown,
-        image_descriptions=descriptions,
         pdf_path=pdf_path,
     )
 
@@ -1317,18 +1404,22 @@ async def generate(
     session_store: SessionStore = Depends(get_session_store),
     storage_manager: StorageManager = Depends(get_storage_manager),
 ):
+
     state = await session_store.get_or_create(session_id, label=req.label)
-    profile = state.topic_profile() if state.topic_stats else req.topic_profile
+    profile = session_store.get_relevant_profile(session_id, state)
     raw_images = await storage_manager.list_images(session_id)
 
     result = await question_generator.generate_questions(
-        req.content, raw_images, req.image_descriptions, storage_manager, profile
+        req.content, raw_images, storage_manager, profile
     )
 
-    if result.status == GenerationStatus.GENERATED:
+    if result.status != GenerationStatus.GENERATED:
+        raise HTTPException(status_code=422, detail="Question generation failed validation after max retries")
+    
+    async with _session_locks[session_id]:
         state = await session_store.get_or_create(session_id, label=req.label)
         state.questions = result.questions
-        await session_store.save(session_id, state)
+        await session_store.replace_questions(session_id, result.questions)
 
         # only store inputs that produced validated questions — keeps training
         # data clean; failed generations are a separate signal if needed later
@@ -1337,13 +1428,11 @@ async def generate(
             content=req.content,
             raw_markdown=req.raw_markdown,
             raw_images=raw_images,
-            image_descriptions=req.image_descriptions,
             pdf_path=req.pdf_path,
+            questions=result.questions
         )
 
-        return result
-
-    raise HTTPException(status_code=422, detail="Question generation failed validation after max retries")
+    return result
 
 
 @app.get("/sessions/{session_id}", response_model=SessionState)
@@ -1365,33 +1454,34 @@ async def submit_answer(
     answer_validator: AnswerValidator = Depends(get_answer_validator),
     difficulty_controller: DifficultyController = Depends(get_difficulty_controller),
 ):
-    try:
-        state = await session_store.get(session_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    async with _session_locks[session_id]:
+        try:
+            state = await session_store.get(session_id)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    # get topics from the question being answered
-    question = next(
-        (q for q in state.questions if q.question_id == req.question_id), None
-    )
-    if question is None:
-        raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
+        # get topics from the question being answered
+        question = next(
+            (q for q in state.questions if q.question_id == req.question_id), None
+        )
+        if question is None:
+            raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
 
-    result = await answer_validator.validate_answers(
-        responses=[{"question_id": req.question_id, "response": req.response}],
-        questions=[question],
-        state=state,
-    )
-    question_result = result.results[0]
-    state, updates = difficulty_controller.update(state, question_result, question)
-    state.advance()
+        result = await answer_validator.validate_answers(
+            responses=[{"question_id": req.question_id, "response": req.response}],
+            questions=[question],
+            state=state,
+        )
+        question_result = result.results[0]
+        state, updates = difficulty_controller.update(state, question_result, question)
 
-    await asyncio.gather(
-        session_store.save(session_id, state),
-        session_store.append_answer(session_id, req.response, question_result),
-    )
+        await asyncio.gather(
+            session_store.save(session_id, state),
+            session_store.append_answer(session_id, req.response, question_result),
+        )
 
-    await session_store.append_topic_updates(session_id, question_result.question_id, updates)
+        state.advance()
+        await session_store.append_topic_updates(session_id, question_result.question_id, updates)
 
     return AnswerResponse(
         feedback=question_result.feedback,
@@ -1417,10 +1507,6 @@ async def chat(
     context = SessionContext.from_state(state)
     reply = await study_chat.respond(req.user_message, context)
 
-    # persist both chat messages concurrently
-    await asyncio.gather(
-        session_store.append_chat(session_id, "user", req.user_message),
-        session_store.append_chat(session_id, "assistant", reply),
-    )
+    await session_store.append_chat_turn(session_id, req.user_message, reply)
 
     return ChatResponse(reply=reply, current_question_index=state.current_question_index)

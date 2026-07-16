@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, RateLimitError, APIStatusError, BadRequestError
 from llama_cloud import AsyncLlamaCloud
 from dotenv import load_dotenv
 import os
@@ -12,10 +12,15 @@ import base64
 import json
 from typing import Literal
 from enum import Enum
-from pydantic import BaseModel, HttpUrl, model_validator, Field
-from uuid import UUID
+from pydantic import BaseModel, HttpUrl, model_validator, Field, field_validator, ValidationError
+from uuid import UUID, uuid4
 from supabase import acreate_client, AsyncClient
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+import re
+from fastapi.responses import JSONResponse
+import traceback
+import logging
 
 load_dotenv()
 
@@ -35,7 +40,6 @@ async def lifespan(app: FastAPI):
     app.state.supabase = await acreate_client(SUPABASE_URL, SUPABASE_KEY)
     yield
 
-
 app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
@@ -45,6 +49,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Dependency — supabase client from app state (no lru_cache needed)
@@ -53,6 +64,22 @@ app.add_middleware(
 async def get_supabase(request: Request) -> AsyncClient:
     return request.app.state.supabase
 
+# ---------------------------------------------------------------------------
+# Custom Exceptions
+# ---------------------------------------------------------------------------
+
+class SessionNotFoundError(Exception):
+    pass
+
+class DatabaseError(Exception):
+    pass
+
+class StorageError(Exception):
+    def __init__(self, operation: str, path: str, cause: Exception | None = None):
+        self.operation = operation
+        self.path = path
+        self.cause = cause
+        super().__init__(f"Storage {operation} failed for {path}")
 
 # ---------------------------------------------------------------------------
 # Models
@@ -66,7 +93,7 @@ class GenerationStatus(str, Enum):
 class Question(BaseModel):
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
-    difficulty: int
+    per_topic_difficulty: list[int]
     topics: list[str]
     prompt: str
     correct_answer: str
@@ -219,6 +246,13 @@ class AnswerRequest(BaseModel):
 class ChatRequest(BaseModel):
     user_message: str
 
+    @field_validator("user_message")
+    @classmethod
+    def validate_message(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("user_message cannot be empty")
+        return v
+
 
 class AnswerResponse(BaseModel):
     feedback: str
@@ -361,6 +395,8 @@ ANSWER_VALIDATION_TOOL = {
                         "question_id": {"type": "string"},
                         "score": {
                             "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
                             "description": "0.0 (fully wrong) to 1.0 (fully correct). Use partial credit for FRQs."
                         },
                         "correct": {
@@ -377,6 +413,8 @@ ANSWER_VALIDATION_TOOL = {
                         },
                         "topic_results": {
                             "type": "array",
+                            "minItems": 1,
+                            "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -390,10 +428,14 @@ ANSWER_VALIDATION_TOOL = {
                                     "correct": {"type": "boolean"},
                                     "confidence": {
                                         "type": "number",
+                                        "minimum": 0.0,
+                                        "maximum": 1.0,
                                         "description": "0.0 to 1.0 — how certain you are in this topic grade given the student's response."
                                     },
                                     "adaptation_signal": {
                                         "type": "number",
+                                        "minimum": -1.0,
+                                        "maximum": 1.0,
                                         "description": (
                                             "Directional evidence for difficulty adjustment, -1.0 to +1.0. "
                                             "This is your read on the student's ability relative to this topic's current difficulty — "
@@ -407,22 +449,188 @@ ANSWER_VALIDATION_TOOL = {
                                         "type": ["string", "null"],
                                         "description": "Short tag for a recurring error type specific to this topic if identifiable, else null."
                                     },
-                                    "feedback": {"type": "string", "description": "What specifically went wrong or right on this concept."},
+                                    "feedback": {
+                                        "type": "string",
+                                        "description": "What specifically went wrong or right on this concept."
+                                    },
                                 },
-                                "required": ["topic", "score", "correct", "confidence", "adaptation_signal", "misconception", "feedback"]
+                                "required": [
+                                    "topic",
+                                    "score",
+                                    "correct",
+                                    "confidence",
+                                    "adaptation_signal",
+                                    "misconception",
+                                    "feedback",
+                                ],
+                                "additionalProperties": False,
                             },
                         },
-                        "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic."
                     },
+                    "required": [
+                        "question_id",
+                        "score",
+                        "correct",
+                        "feedback",
+                        "misconception",
+                        "topic_results",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": ["question_id", "score", "correct", "feedback", "topic_results"]
             }
-        }
+        },
+        "required": ["results"],
+        "additionalProperties": False,
     },
-    "required": ["results"]
 }
 
+# ---------------------------------------------------------------------------
+# exception handlers
+# ---------------------------------------------------------------------------
 
+@app.exception_handler(DatabaseError)
+async def database_error_handler(request: Request, exc: DatabaseError):
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "service_unavailable",
+            "detail": "Database unavailable, please retry",
+        }
+    )
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "invalid_request",
+            "detail": str(exc),  # safe to expose, it's a client error
+        }
+    )
+
+@app.exception_handler(asyncio.TimeoutError)
+async def async_timeout_error_handler(request: Request, exc: asyncio.TimeoutError):
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "10"},
+        content={
+            "error": "service_unavailable",
+            "detail": "Request timed out, please retry",
+        }
+    )
+
+@app.exception_handler(httpx.TimeoutError)
+async def httpx_timeout_error_handler(request: Request, exc: httpx.TimeoutError):
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "10"},
+        content={
+            "error": "service_unavailable",
+            "detail": "Image fetch timed out, please retry",
+        }
+    )
+
+@app.exception_handler(httpx.RequestError)
+async def httpx_request_error_handler(request: Request, exc: httpx.RequestError):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "service_unavailable",
+            "detail": "Image fetch failed, please retry",
+        }
+    )
+
+@app.exception_handler(RateLimitError)
+async def rate_limit_error_handler(request: Request, exc: RateLimitError):
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": "60"},
+        content={
+            "error": "rate_limited",
+            "detail": "AI service rate limit reached, please retry in a moment",
+        }
+    )
+
+@app.exception_handler(BadRequestError)  # must come before APIStatusError
+async def bad_request_error_handler(request: Request, exc: BadRequestError):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "invalid_request",
+            "detail": "Invalid content sent to AI service, check image format or size",
+        }
+    )
+
+@app.exception_handler(APIStatusError)
+async def api_status_error_handler(request: Request, exc: APIStatusError):
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": "upstream_error",
+            "detail": "AI service returned an error, please retry",
+        }
+    )
+
+@app.exception_handler(RuntimeError)
+async def runtime_handler(request: Request, exc: RuntimeError):
+    error_id = uuid4().hex[:8]
+    logger.error(f"RuntimeError {error_id}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "detail": "AI service failed to return a valid response",
+            "error_id": error_id,
+        }
+    )
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_error_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "detail": exc.errors(),  # structured field-level errors, safe to expose
+        }
+    )
+
+@app.exception_handler(StorageError)
+async def storage_error_handler(request: Request, exc: StorageError):
+    error_id = uuid4().hex[:8]
+    logger.error(
+        f"StorageError {error_id}: {exc.operation} failed for {exc.path}",
+        extra={
+            "error_id": error_id,
+            "operation": exc.operation,
+            "path": exc.path,
+            "cause": str(exc.cause),
+        }
+    )
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "30"},
+        content={
+            "error": "storage_unavailable",
+            "detail": "File storage unavailable, please retry",
+            "error_id": error_id,
+        }
+    )
+
+@app.exception_handler(Exception)  # always last
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    error_id = uuid4().hex[:8]
+    logger.error(
+        f"Unhandled exception {error_id}: {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "detail": "An unexpected error occurred",
+            "error_id": error_id,
+        }
+    )
 
 # ---------------------------------------------------------------------------
 # Storage — PDF + images → Supabase Storage buckets
@@ -431,6 +639,7 @@ ANSWER_VALIDATION_TOOL = {
 class StorageManager:
     def __init__(self, supabase: AsyncClient):
         self.db = supabase
+        self.SAFE_FILENAME = re.compile(r'^[\w\-]+\.(png|jpg|jpeg|webp)$')
     
     async def list_images(self, session_id: UUID) -> list[dict]:
         response = await (
@@ -444,15 +653,28 @@ class StorageManager:
 
     async def store_pdf(self, session_id: UUID, pdf_bytes: bytes) -> str:
         path = f"{session_id}/document.pdf"
-        await self.db.storage.from_("generation-pdfs").upload(
-            path=path,
-            file=pdf_bytes,
-            file_options={"content-type": "application/pdf"},
-        )
-        return path
+        try:
+            await self.db.storage.from_("generation-pdfs").upload(
+                path=path,
+                file=pdf_bytes,
+                file_options={"content-type": "application/pdf"},
+            )
+            return path
+        except Exception as e:
+            raise StorageError("upload", path, cause=e) from e
 
     async def download_image(self, session_id: UUID, storage_path: str) -> bytes | None:
         try:
+            # construct the expected path and only accept exact matches
+            filename = Path(storage_path).name
+            if not filename or not self.SAFE_FILENAME.match(filename):
+                return None
+                
+            expected_path = f"{session_id}/{filename}"
+            if storage_path != expected_path:
+                print(f"Path validation failed: {storage_path} != {expected_path}")
+                return None
+
             session = (
                 await self.db.table("sessions")
                 .select("id")
@@ -460,12 +682,7 @@ class StorageManager:
                 .maybe_single()
                 .execute()
             )
-
             if not session.data:
-                print(f"Unauthorized access to session {session_id}")
-                return None
-
-            if storage_path != f"{session_id}/{storage_path.split('/')[-1]}":
                 return None
 
             return await self.db.storage.from_("generation-images").download(storage_path)
@@ -474,6 +691,8 @@ class StorageManager:
             return None
 
     async def store_images(self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]) -> list[dict]:
+        ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
         async with httpx.AsyncClient() as http_client:
             async def fetch_and_store(img: dict) -> dict | None:
                 path = None
@@ -481,11 +700,15 @@ class StorageManager:
                     response = await http_client.get(img["url"])
                     if response.status_code != 200:
                         return None
-                    path = f"{session_id}/{img['filename']}"
+                    content_type = img.get("content_type", "image/png")
+                    if content_type not in ALLOWED_CONTENT_TYPES:
+                        content_type = "image/png"
+
+                    path = f"{session_id}/{uuid4().hex}_{img['filename']}"
                     await self.db.storage.from_("generation-images").upload(
                         path=path,
                         file=response.content,
-                        file_options={"content-type": img.get("content_type", "image/png")},
+                        file_options={"content-type": content_type},
                     )
 
                     await self.db.table("generation_images").insert({
@@ -500,13 +723,19 @@ class StorageManager:
                         "storage_path": path,
                         "description": image_descriptions.get(img["filename"]),
                     }
+                except StorageError:
+                    raise
                 except Exception as e:
                     if path:
                         await self.db.storage.from_("generation-images").remove([path])
                     raise
 
-            results = await asyncio.gather(*(fetch_and_store(img) for img in images))
-            return [r for r in results if r is not None]
+            results = await asyncio.gather(*(fetch_and_store(img) for img in images), return_exceptions=True)
+            failed = [r for r in results if isinstance(r, Exception)]
+            if failed:
+                logger.error(f"Failed to store {len(failed)} images for session {session_id}: {failed}")
+
+            return [r for r in results if isinstance(r, dict)]
 
 
 # ---------------------------------------------------------------------------
@@ -521,50 +750,63 @@ class AsyncPDFProcessor:
         self.client = AsyncLlamaCloud(api_key=api_key)
 
     async def extract(self, file_bytes: bytes) -> tuple[str, list[dict], list[dict]]:
-        uploaded = await self.client.files.create(
-            file=("document.pdf", file_bytes, "application/pdf"),
-            purpose="parse",
-        )
+        uploaded = None
+        try:
+            uploaded = await self.client.files.create(
+                file=("document.pdf", file_bytes, "application/pdf"),
+                purpose="parse",
+            )
 
-        job = await self.client.parsing.parse(
-            file_id=uploaded.id,
-            tier="agentic",
-            version="latest",
-            expand=["markdown", "items", "images_content_metadata"],
-            output_options={"images_to_save": ["layout", "embedded"]},
-        )
+            job = await self.client.parsing.parse(
+                file_id=uploaded.id,
+                tier="agentic",
+                version="latest",
+                expand=["markdown", "items", "images_content_metadata"],
+                output_options={"images_to_save": ["layout", "embedded"]},
+            )
 
-        markdown = getattr(job, "markdown", "") or ""
+            markdown = getattr(job, "markdown", "") or ""
 
-        items = []
-        for pages in getattr(getattr(job, "items", None), "pages", []):
-            page_number = getattr(pages, "page_number", 0)
-            for item in getattr(pages, "items", []):
-                item_data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
-                bbox = item_data.get("bbox")
-                items.append({
-                    "type": item_data.get("type"),
-                    "level": item_data.get("level"),
-                    "value": item_data.get("value"),
-                    "md": item_data.get("md"),
-                    "page": page_number,
-                    "bbox": bbox.model_dump() if hasattr(bbox, "model_dump") else bbox,
-                    "grounding": item_data.get("grounding"),
-                })
+            items = []
+            for pages in getattr(getattr(job, "items", None), "pages", []):
+                page_number = getattr(pages, "page_number", 0)
+                for item in getattr(pages, "items", []):
+                    item_data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+                    bbox = item_data.get("bbox")
+                    items.append({
+                        "type": item_data.get("type"),
+                        "level": item_data.get("level"),
+                        "value": item_data.get("value"),
+                        "md": item_data.get("md"),
+                        "page": page_number,
+                        "bbox": bbox.model_dump() if hasattr(bbox, "model_dump") else bbox,
+                        "grounding": item_data.get("grounding"),
+                    })
 
-        images = [
-            {
-                "filename": img.filename,
-                "url": img.presigned_url,
-                "page": img.index,
-                "bbox": img.bbox.model_dump(),
-                "content_type": img.content_type,
-                "category": img.category,
-            }
-            for img in job.images_content_metadata.images
-        ]
+            # guard against missing images_content_metadata
+            images = []
+            images_meta = getattr(job, "images_content_metadata", None)
+            if images_meta is not None:
+                for img in getattr(images_meta, "images", []):
+                    images.append({
+                        "filename": img.filename,
+                        "url": img.presigned_url,
+                        "page": img.index,
+                        "bbox": img.bbox.model_dump(),
+                        "content_type": img.content_type,
+                        "category": img.category,
+                    })
 
-        return markdown, items, images
+            return markdown, items, images
+
+        except Exception as e:
+            # best effort cleanup of uploaded file
+            if uploaded is not None:
+                try:
+                    await self.client.files.delete(uploaded.id)
+                except Exception:
+                    pass
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +816,9 @@ class AsyncPDFProcessor:
 class ImageFilter:
     def __init__(self, client):
         self.exclude_categories = {"logo", "icon", "banner", "header", "footer"}
+        self.MAX_CONCURRENT = 3
         self.client = client
+        self.BATCH_SIZE = 5
 
     async def heuristic_filter(self, images: list[dict]) -> list[dict]:
         if not images:
@@ -589,70 +833,120 @@ class ImageFilter:
             aspect_ratio = width / height
             if aspect_ratio > 10 or aspect_ratio < 0.1:
                 continue
-            filtered.append(image)
+            if image.get("category") in {"watermark", "signature", "stamp"}:
+                continue
+            if width * height < 20000:
+                continue
 
+            filtered.append(image)
         return filtered
 
     async def semantic_filter(
-        self, images: list[dict], markdown: str
+        self, images: list[dict]
     ) -> tuple[list[dict], dict[str, str]]:
         if not images:
             return [], {}
 
         final_images: list[dict] = []
         descriptions: dict[str, str] = {}
+        semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
+        MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
-        async with httpx.AsyncClient() as http_client:
-            for image in images:
+        MAGIC_BYTES = {
+            b"\x89PNG": "image/png",
+            b"\xff\xd8\xff": "image/jpeg",
+            b"RIFF": "image/webp",
+            b"GIF8": "image/gif",
+        }
+
+        def validate_image_bytes(data: bytes) -> str | None:
+            for magic, content_type in MAGIC_BYTES.items():
+                if data[:len(magic)] == magic:
+                    return content_type
+            return None
+
+        async def process_image(image: dict, http_client: httpx.AsyncClient) -> tuple[dict | None, str | None]:
+            async with semaphore:
                 try:
-                    img_response = await http_client.get(image["url"])
-                    if img_response.status_code != 200:
-                        continue
+                    if not self._is_safe_url(image["url"]):
+                        print(f"Unsafe URL rejected: {image['url']}")
+                        return None, None
 
-                    base64_image = base64.b64encode(img_response.content).decode("utf-8")
+                    async with http_client:
+                        img_response = await http_client.get(image["url"])
+                        img_response.raise_for_status()
 
-                    result = await self.client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=500,
-                        temperature=0.0,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": image.get("content_type", "image/png"),
-                                        "data": base64_image,
+                        content = img_response.content
+
+                        # size check before anything else
+                        if len(content) > MAX_IMAGE_BYTES:
+                            print(f"Image too large: {image.get('filename')} ({len(content)} bytes)")
+                            return None, None
+
+                        # magic bytes validation
+                        content_type = validate_image_bytes(content)
+                        if content_type is None:
+                            print(f"Invalid image format: {image.get('filename')}")
+                            return None, None
+
+                        base64_image = base64.b64encode(content).decode("utf-8")
+
+                        result = await self.client.messages.create(
+                            model="claude-haiku-4-5-20251001",
+                            max_tokens=500,
+                            temperature=0.0,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": content_type,  # use validated type
+                                            "data": base64_image,
+                                        },
                                     },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "Analyze this image from a lecture PDF.\n"
-                                        "First line: YES if it contains academically meaningful content "
-                                        "(diagram, graph, mathematical figure, chart, technical illustration), "
-                                        "NO if decorative or irrelevant.\n\n"
-                                        "If YES, second line onward: describe the academic content concisely, "
-                                        "including any text, labels, or mathematical notation visible that may "
-                                        "not appear in the lecture notes. If NO, stop after the first line."
-                                    ),
-                                },
-                            ],
-                        }],
-                    )
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "Analyze this image from a lecture PDF.\n"
+                                            "First line: YES if it contains academically meaningful content "
+                                            "(diagram, graph, mathematical figure, chart, technical illustration), "
+                                            "NO if decorative or irrelevant.\n\n"
+                                            "If YES, second line onward: describe the academic content concisely, "
+                                            "including any text, labels, or mathematical notation visible that may "
+                                            "not appear in the lecture notes. If NO, stop after the first line."
+                                        ),
+                                    },
+                                ],
+                            }],
+                        )
 
-                    response_text = result.content[0].text.strip()
-                    first_line = response_text.split("\n")[0].upper()
+                        response_text = result.content[0].text.strip()
+                        first_line = response_text.split("\n")[0].upper()
 
-                    if first_line == "YES":
-                        final_images.append(image)
-                        if "\n" in response_text:
-                            descriptions[image["filename"]] = response_text.split("\n", 1)[1].strip()
+                        if first_line == "YES":
+                            description = response_text.split("\n", 1)[1].strip() if "\n" in response_text else None
+                            return image, description
+                        return None, None
 
+                except httpx.HTTPError as e:
+                    print(f"Failed to fetch {image.get('filename')}: {e}")
+                    return None, None
                 except Exception as e:
-                    print(f"Error filtering image {image.get('filename')}: {e}")
-                    final_images.append(image)  # keep on error
+                    print(f"Unexpected error processing {image.get('filename')}: {e}")
+                    return None, None
+                                                
+        async with httpx.AsyncClient(timeout=30) as http_client:
+            results = await asyncio.gather(
+                *(process_image(img, http_client) for img in images)
+            )
+
+        for image, description in results:
+            if image is not None:
+                final_images.append(image)
+                if description:
+                    descriptions[image["filename"]] = description
 
         return final_images, descriptions
 
@@ -908,9 +1202,15 @@ class QuestionGenerator:
             new_questions = [Question(**q) for q in tool_use.input["questions"]]
             new_questions = [q for q in new_questions if q.question_id not in approved_questions]
 
-            seen_ids = [q.question_id for q in new_questions]
-            if len(seen_ids) != len(set(seen_ids)):
-                raise ValueError("Duplicate question_id in generated batch")
+            seen_ids: set[str] = set()
+            deduplicated = []
+            for q in new_questions:
+                if q.question_id not in seen_ids:
+                    seen_ids.add(q.question_id)
+                    deduplicated.append(q)
+                else:
+                    logger.warning(f"Duplicate question_id {q.question_id} in batch, skipping")
+            new_questions = deduplicated
 
             # validate only the new batch
             new_validation = await self.question_validator.validate_questions(
@@ -1029,6 +1329,7 @@ Data:
 class StudyChatAssistant:
     def __init__(self, client):
         self.client = client
+        self.MAX_HISTORY_TURNS = 10
 
     async def respond(self, user_message: str, session_context: SessionContext) -> str:
         question_context = (
@@ -1036,24 +1337,28 @@ class StudyChatAssistant:
             if session_context.current_question
             else "No active question"
         )
+
+        system_prompt = f"""You are a study assistant helping a student work through practice questions.
+
+    Current question the student is looking at:
+    {question_context}
+
+    Answer conversationally. If they're asking for a hint, guide them without giving
+    away the full answer. If they're asking a concept question, explain clearly."""
+
+        # build proper multi-turn message history
+        history = session_context.chat_history[-self.MAX_HISTORY_TURNS:]
+        messages = [
+            {"role": turn["role"], "content": turn["content"]}
+            for turn in history
+        ]
+        messages.append({"role": "user", "content": user_message})
+
         message = await self.client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1024,
-            messages=[{
-                "role": "user",
-                "content": f"""You are a study assistant helping a student work through practice questions.
-
-Current question the student is looking at:
-{question_context}
-
-Recent conversation:
-{json.dumps(session_context.chat_history, indent=2)}
-
-Student's message: {user_message}
-
-Answer conversationally. If they're asking for a hint, guide them without giving
-away the full answer. If they're asking a concept question, explain clearly.""",
-            }],
+            system=system_prompt,
+            messages=messages,
         )
         return next(b.text for b in message.content if b.type == "text")
 
@@ -1147,26 +1452,33 @@ class SessionStore:
         self.db = supabase
 
     async def get(self, session_id: UUID) -> SessionState:
-        # all four queries run concurrently
-        row_res, questions_res, chat_res, history_res = await asyncio.gather(
-            self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
-            self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
-            self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
-            self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
-        )
+        try:
+            row_res, questions_res, chat_res, history_res = await asyncio.gather(
+                self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
+                self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
+                self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
+                self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
+            )
+        except Exception as e:
+            # distinguish between not found and infrastructure failure
+            if "no rows" in str(e).lower() or "pgrst116" in str(e).lower():
+                raise SessionNotFoundError(f"Session {session_id} not found") from e
+            raise DatabaseError(f"Failed to fetch session {session_id}") from e
+
+        if not row_res.data:
+            raise SessionNotFoundError(f"Session {session_id} not found")
+
         raw_stats = row_res.data.get("topic_stats", {})
         topic_stats = {t: TopicStats(**s) for t, s in raw_stats.items()}
-        label=row_res.data["label"]
-        current_question_index=row_res.data["current_question_index"]
 
         return SessionState(
             session_id=session_id,
-            label=label,
-            current_question_index=current_question_index,
+            label=row_res.data["label"],
+            current_question_index=row_res.data["current_question_index"],
             topic_stats=topic_stats,
             questions=[Question(**q) for q in questions_res.data],
             chat_history=list(reversed(chat_res.data)),
-            history=list(reversed([QuestionResult(**h) for h in history_res.data])),
+            history=[QuestionResult(**h) for h in history_res.data],
         )
 
     async def get_or_create(self, session_id: UUID, label: str) -> SessionState:
@@ -1251,6 +1563,30 @@ class SessionStore:
             "pdf_path": pdf_path,
             "topics_covered": topics_covered
         }).execute()
+    
+    async def store_upload_context(
+        self,
+        session_id: UUID,
+        content: str,
+        raw_markdown: str,
+        pdf_path: str,
+    ) -> None:
+        await self.db.table("upload_context").upsert({
+            "session_id": str(session_id),
+            "content": content,
+            "raw_markdown": raw_markdown,
+            "pdf_path": pdf_path,
+            "created_at": "now()",
+        }, on_conflict="session_id").execute()
+
+    async def get_upload_context(self, session_id: UUID) -> dict | None:
+        result = await (self.db.table("upload_context")
+            .select("content, raw_markdown, pdf_path")
+            .eq("session_id", str(session_id))
+            .maybe_single()
+            .execute()
+        )
+        return result.data
     
     async def append_topic_updates(self, session_id: UUID, question_id: str, updates: list[TopicUpdate])  -> None:
         await self.db.table("elo_history").insert([
@@ -1377,6 +1713,9 @@ async def upload(
             status_code=422,
             detail="No meaningful content could be extracted from this document."
         )
+    
+    # create session row so generate endpoint can reference it
+    await session_store.get_or_create(session_id, label=label)
 
     # store PDF and images concurrently — presigned URLs are ephemeral so do
     # this before returning; storage_path replaces url in raw_images
@@ -1385,8 +1724,7 @@ async def upload(
         storage_manager.store_images(session_id, filtered_images, descriptions),
     )
 
-    # create session row so generate endpoint can reference it
-    await session_store.get_or_create(session_id, label=label)
+    session_store.store_upload_context(session_id, content, markdown, pdf_path)
 
     return UploadResponse(
         session_id=session_id,
@@ -1394,6 +1732,19 @@ async def upload(
         raw_markdown=markdown,
         pdf_path=pdf_path,
     )
+
+
+@app.post("/sessions/{session_id}/reset", response_model=SessionState)
+async def reset_session(
+    session_id: UUID,
+    session_store: SessionStore = Depends(get_session_store),
+):
+    async with _session_locks[session_id]:
+        state = await session_store.get(session_id)
+        
+        state.current_question_index = 0
+        await session_store.save(session_id, state)
+        return state
 
 
 @app.post("/sessions/{session_id}/generate", response_model=GenerationResult)
@@ -1413,22 +1764,47 @@ async def generate(
         req.content, raw_images, storage_manager, profile
     )
 
+    upload_context = await session_store.get_upload_context(session_id)
+    if upload_context is None and not req.raw_markdown:
+        raise HTTPException(status_code=400, detail="No upload context found for this session")
+    
+    content = upload_context["content"] if upload_context else req.raw_markdown
+    raw_markdown = upload_context["raw_markdown"] if upload_context else req.raw_markdown
+    pdf_path = upload_context["pdf_path"] if upload_context else ""
+
     if result.status != GenerationStatus.GENERATED:
-        raise HTTPException(status_code=422, detail="Question generation failed validation after max retries")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "generation_failed",
+                "message": "Question generation failed validation after max retries",
+                "approved_count": len(result.questions),
+                "validation": [
+                    {
+                        "question_id": v.question_id,
+                        "approved": v.approved,
+                        "feedback": v.feedback,
+                    }
+                    for v in result.validation
+                    if not v.approved
+                ],
+            }
+        )
     
     async with _session_locks[session_id]:
         state = await session_store.get_or_create(session_id, label=req.label)
         state.questions = result.questions
+        state.current_question_index = 0
         await session_store.replace_questions(session_id, result.questions)
-
+        await session_store.save(session_id, state)
         # only store inputs that produced validated questions — keeps training
         # data clean; failed generations are a separate signal if needed later
         await session_store.append_generation_input(
             session_id=session_id,
-            content=req.content,
-            raw_markdown=req.raw_markdown,
+            content=content,
+            raw_markdown=raw_markdown,
             raw_images=raw_images,
-            pdf_path=req.pdf_path,
+            pdf_path=pdf_path,
             questions=result.questions
         )
 
@@ -1467,12 +1843,33 @@ async def submit_answer(
         if question is None:
             raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
 
-        result = await answer_validator.validate_answers(
-            responses=[{"question_id": req.question_id, "response": req.response}],
-            questions=[question],
-            state=state,
-        )
+        try:
+            result = await answer_validator.validate_answers(
+                responses=[{"question_id": req.question_id, "response": req.response}],
+                questions=[question],
+                state=state,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=f"Error: {e}")
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail="An internal server error occurred."
+            )
+        
         question_result = result.results[0]
+        if not question_result.topic_results:
+            raise HTTPException(
+                status_code=500,
+                detail="Grading did not return topic results"
+            )
+
+        if {tr.topic for tr in question_result.topic_results} != set(question.topics):
+            raise HTTPException(
+                status_code=500,
+                detail="Grading returned topic results that don't match question topics"
+            )
+        
         state, updates = difficulty_controller.update(state, question_result, question)
 
         await asyncio.gather(

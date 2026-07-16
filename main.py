@@ -21,6 +21,7 @@ import re
 from fastapi.responses import JSONResponse
 import traceback
 import logging
+from datetime import datetime
 
 load_dotenv()
 
@@ -93,8 +94,7 @@ class GenerationStatus(str, Enum):
 class Question(BaseModel):
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
-    per_topic_difficulty: list[int]
-    topics: list[str]
+    topic_difficulties: dict[str, float] #changes need to percolate down
     prompt: str
     correct_answer: str
     explanation: str
@@ -102,10 +102,19 @@ class Question(BaseModel):
     correct_choice_index: int | None = None
     rubric_points: list[str] | None = None
 
+    @property
+    def topics(self) -> list[str]:
+        return list(self.topic_difficulties.keys())
+
+    @property
+    def difficulty(self) -> float:
+        return sum(self.topic_difficulties.values()) / len(self.topic_difficulties)
+
     @model_validator(mode="after")
     def validate_question_type(self) -> "Question":
-        if not (300 <= self.difficulty <= 3000):
-            raise ValueError(f"{self.question_id}: difficulty must be between 300 and 3000")
+        for topic, difficulty in self.topic_difficulties.items():
+            if not (300 <= difficulty <= 3000):
+                raise ValueError(f"{self.question_id}: difficulty must be between 300 and 3000")
         if self.question_type == "MCQ":
             if not self.choices or len(self.choices) < 3:
                 raise ValueError(f"{self.question_id}: MCQ requires >=3 choices")
@@ -198,12 +207,11 @@ class SessionState(BaseModel):
     def advance(self) -> None:
         self.current_question_index += 1
 
-    def get_topic_elo(self, topics: list[str]) -> float:
-        """Average difficulty across the question's topics, default 3."""
-        stats = [self.topic_stats[t] for t in topics if t in self.topic_stats]
-        if not stats:
-            return 800.0
-        return round(sum(s.elo for s in stats) / len(stats), 1)
+    def get_topic_elo(self, topics: list[str]) -> dict:
+        return {
+            t: self.topic_stats[t].elo if t in self.topic_stats else 800
+            for t in topics
+        }
 
     def topic_profile(self, min_attempts: int = 2) -> dict:
         strong, weak, unseen = [], [], []
@@ -296,17 +304,20 @@ QUESTION_GENERATION_TOOL = {
                             "type": "string",
                             "enum": ["MCQ", "FRQ"]
                         },
-                        "difficulty": {
-                            "type": "number",
-                            "minimum": 300,
-                            "maximum": 3000,
-                            "description": "Target ELO difficulty for this question. 300=novice recall, 1650=intermediate application, 3000=expert synthesis."
-                        },
-                        "topics": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 1,
-                            "description": "Concept(s) being tested. Single-concept questions have one entry. Synthesis questions (difficulty 4-5) should list all concepts being combined."
+                        "topic_difficulties": {
+                            "type": "object",
+                            "description": (
+                                "Maps each tested topic to its target ELO difficulty (300=novice recall, "
+                                "1650=intermediate application, 3000=expert synthesis). "
+                                "Each key must exactly match an entry in the session's topic list. "
+                                "Synthesis questions must include one entry per combined topic."
+                            ),
+                            "additionalProperties": {
+                                "type": "number",
+                                "minimum": 300,
+                                "maximum": 3000
+                            },
+                            "minProperties": 1
                         },
                         "prompt": {
                             "type": "string",
@@ -484,6 +495,34 @@ ANSWER_VALIDATION_TOOL = {
     },
 }
 
+IMAGE_FILTERING_TOOL = {
+    "name": "filter_images",
+    "description": "Semantically filter images based on their relation to a lecture PDF.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "filtered_images": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "keep": {
+                            "type": "boolean",
+                            "description": "True if it contains academically meaningful content. False if decorative or irrelevant."
+                        },
+                        "description": {
+                            "type": ["string", "null"],
+                            "description": "Concise description of the academic content. Null if 'keep' is false."
+                        }
+                    },
+                    "required": ['keep', 'description']
+                }
+            }
+        },
+        "required": ["filtered_images"]
+    }
+}
+
 # ---------------------------------------------------------------------------
 # exception handlers
 # ---------------------------------------------------------------------------
@@ -651,8 +690,9 @@ class StorageManager:
 
         return response.data
 
-    async def store_pdf(self, session_id: UUID, pdf_bytes: bytes) -> str:
-        path = f"{session_id}/document.pdf"
+    async def store_pdf(self, session_id: UUID, pdf_bytes: bytes, filename: str) -> str:
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        path = f"{session_id}/{Path(filename).stem}_{timestamp}.pdf"
         try:
             await self.db.storage.from_("generation-pdfs").upload(
                 path=path,
@@ -872,63 +912,65 @@ class ImageFilter:
                         print(f"Unsafe URL rejected: {image['url']}")
                         return None, None
 
-                    async with http_client:
-                        img_response = await http_client.get(image["url"])
-                        img_response.raise_for_status()
+                    img_response = await http_client.get(image["url"])
+                    img_response.raise_for_status()
 
-                        content = img_response.content
+                    content = img_response.content
 
-                        # size check before anything else
-                        if len(content) > MAX_IMAGE_BYTES:
-                            print(f"Image too large: {image.get('filename')} ({len(content)} bytes)")
-                            return None, None
-
-                        # magic bytes validation
-                        content_type = validate_image_bytes(content)
-                        if content_type is None:
-                            print(f"Invalid image format: {image.get('filename')}")
-                            return None, None
-
-                        base64_image = base64.b64encode(content).decode("utf-8")
-
-                        result = await self.client.messages.create(
-                            model="claude-haiku-4-5-20251001",
-                            max_tokens=500,
-                            temperature=0.0,
-                            messages=[{
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": content_type,  # use validated type
-                                            "data": base64_image,
-                                        },
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": (
-                                            "Analyze this image from a lecture PDF.\n"
-                                            "First line: YES if it contains academically meaningful content "
-                                            "(diagram, graph, mathematical figure, chart, technical illustration), "
-                                            "NO if decorative or irrelevant.\n\n"
-                                            "If YES, second line onward: describe the academic content concisely, "
-                                            "including any text, labels, or mathematical notation visible that may "
-                                            "not appear in the lecture notes. If NO, stop after the first line."
-                                        ),
-                                    },
-                                ],
-                            }],
-                        )
-
-                        response_text = result.content[0].text.strip()
-                        first_line = response_text.split("\n")[0].upper()
-
-                        if first_line == "YES":
-                            description = response_text.split("\n", 1)[1].strip() if "\n" in response_text else None
-                            return image, description
+                    # size check before anything else
+                    if len(content) > MAX_IMAGE_BYTES:
+                        print(f"Image too large: {image.get('filename')} ({len(content)} bytes)")
                         return None, None
+
+                    # magic bytes validation
+                    content_type = validate_image_bytes(content)
+                    if content_type is None:
+                        print(f"Invalid image format: {image.get('filename')}")
+                        return None, None
+
+                    base64_image = base64.b64encode(content).decode("utf-8")
+
+                    result = await self.client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=500,
+                        tools=[IMAGE_FILTERING_TOOL],
+                        tool_choice={"type": "tool", "name": "filter_images"},
+                        temperature=0.0,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": content_type,  # use validated type
+                                        "data": base64_image,
+                                    },
+                                },
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Analyze this image from a lecture PDF.\n"
+                                        "Set 'keep' to True if image contains academically meaningful content"
+                                        "(e.g. diagram, graph, mathematical figure, chart, technical illustration)"
+                                        "If 'keep' is true, describe the academic content concisely, "
+                                        "including any text, labels, or mathematical notation visible that may "
+                                        "not appear in the lecture notes. Otherwise, return null for the description."
+                                    ),
+                                },
+                            ],
+                        }],
+                    )
+
+                    tool_use = next((b for b in result.content if b.type == "tool_use"), None)
+                    if tool_use is None:
+                        raise ValueError("Validator did not return a tool call.")
+                    
+                    entry = tool_use.input["filtered_images"]
+
+                    if entry["keep"]:
+                        return image, entry.get("description")
+                    return None, None
 
                 except httpx.HTTPError as e:
                     print(f"Failed to fetch {image.get('filename')}: {e}")
@@ -1061,7 +1103,15 @@ For each question assess:
 - Relevance: is it directly testable from the content?
 - Depth: does it test understanding or problem-solving rather than rote recall?
 - Clarity: is it unambiguous and self-contained without needing the original material?
-- Difficulty accuracy: does the actual difficulty match its stated `difficulty` (300-3000)?
+- Difficulty accuracy: for each topic in `topic_difficulties`, does the stated ELO (300-3000) 
+  accurately reflect how hard this question is for a student at that topic's level?
+  A question testing basic recall of a topic should be near 300-600.
+  A question requiring application or multi-step reasoning should be 1000-2000.
+  A question requiring synthesis across topics or novel problem solving should be 2000-3000.
+  Reject if any topic's difficulty is misrepresented or if difficulties across topics are 
+  wildly inconsistent without justification.
+- Topic coverage: do the keys in `topic_difficulties` accurately reflect what the question 
+  actually tests? Reject if topics are missing or if irrelevant topics are included.
 - MCQ only: are `choices` plausible distractors, with exactly one correct option at `correct_choice_index`?
 - FRQ only: do `rubric_points` fully capture what a correct answer must contain?
 
@@ -1431,7 +1481,7 @@ class DifficultyController:
                 state.topic_stats[tr.topic] = TopicStats(topic=tr.topic)
             stats = state.topic_stats[tr.topic]
 
-            evidence = self.compute_evidence(tr, stats, question.difficulty)
+            evidence = self.compute_evidence(tr, stats, question.topic_difficulties[tr.topic])
             topic_update = self.compute_topic_update(stats, evidence)
 
             stats.elo = topic_update.new_elo
@@ -1696,6 +1746,7 @@ async def upload(
     session_store: SessionStore = Depends(get_session_store),
 ):  
     pdf_bytes = await file.read()
+    pdf_name = file.filename
 
     # extract
     markdown, items, images = await pdf_processor.extract(pdf_bytes)
@@ -1719,8 +1770,8 @@ async def upload(
 
     # store PDF and images concurrently — presigned URLs are ephemeral so do
     # this before returning; storage_path replaces url in raw_images
-    pdf_path, stored_images = await asyncio.gather(
-        storage_manager.store_pdf(session_id, pdf_bytes),
+    pdf_path = await asyncio.gather(
+        storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
         storage_manager.store_images(session_id, filtered_images, descriptions),
     )
 

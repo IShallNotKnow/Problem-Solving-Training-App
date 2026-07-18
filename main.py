@@ -12,7 +12,7 @@ import base64
 import json
 from typing import Literal
 from enum import Enum
-from pydantic import BaseModel, HttpUrl, model_validator, Field, field_validator, ValidationError
+from pydantic import BaseModel, model_validator, Field, field_validator, ValidationError
 from uuid import UUID, uuid4
 from supabase import acreate_client, AsyncClient
 from contextlib import asynccontextmanager
@@ -30,6 +30,13 @@ SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY")
 _session_locks: defaultdict[UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 MAX_CONTENT_CHARS = 12_000
+MAX_PROMPT_IMAGE_TOKENS = 20_000
+TOKENS_PER_PIXEL = 1 / 750
+
+def estimate_tokens(bbox: dict) -> int:
+    w = min(bbox["w"], 1568)
+    h = min(bbox["h"], 1568)
+    return int((w * h) * TOKENS_PER_PIXEL)
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +101,7 @@ class GenerationStatus(str, Enum):
 class Question(BaseModel):
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
-    topic_difficulties: dict[str, float] #changes need to percolate down
+    topic_difficulties: dict[str, int] #changes need to percolate down
     prompt: str
     correct_answer: str
     explanation: str
@@ -112,9 +119,12 @@ class Question(BaseModel):
 
     @model_validator(mode="after")
     def validate_question_type(self) -> "Question":
+        if not self.topic_difficulties:
+            raise ValueError(f"{self.question_id}: topic_difficulties must not be empty")
+    
         for topic, difficulty in self.topic_difficulties.items():
             if not (300 <= difficulty <= 3000):
-                raise ValueError(f"{self.question_id}: difficulty must be between 300 and 3000")
+                raise ValueError(f"{self.question_id}: difficulty for topic '{topic}' must be between 300 and 3000")
         if self.question_type == "MCQ":
             if not self.choices or len(self.choices) < 3:
                 raise ValueError(f"{self.question_id}: MCQ requires >=3 choices")
@@ -138,8 +148,8 @@ class TopicResult(BaseModel):
 
 class TopicUpdate(BaseModel):
     topic: str
-    previous_elo: float
-    new_elo: float
+    previous_elo: int
+    new_elo: int
     elo_delta: float
     previous_p_known: float
     new_p_known: float
@@ -163,9 +173,8 @@ class QuestionValidationResult(BaseModel):
 class TopicStats(BaseModel):
     topic: str
     attempts: int = 0
-    elo: float = 800.0
+    elo: int = 800
     p_known: float = 0.5
-    recent_history: list[float] = Field(default_factory=list)
 
 
 class TopicEvidence(BaseModel):
@@ -242,7 +251,6 @@ class GenerateRequest(BaseModel):
     label: str
     raw_markdown: str = ""
     pdf_path: str = ""
-    topics: list[str]
     topic_profile: dict | None = None
 
 
@@ -313,7 +321,7 @@ QUESTION_GENERATION_TOOL = {
                                 "Synthesis questions must include one entry per combined topic."
                             ),
                             "additionalProperties": {
-                                "type": "number",
+                                "type": "integer",
                                 "minimum": 300,
                                 "maximum": 3000
                             },
@@ -349,7 +357,7 @@ QUESTION_GENERATION_TOOL = {
                         }
                     },
                     "required": [
-                        "question_id", "question_type", "difficulty", "topics",
+                        "question_id", "question_type", "topic_difficulties",
                         "prompt", "correct_answer", "explanation"
                     ],
                     "additionalProperties": False
@@ -683,8 +691,8 @@ class StorageManager:
     async def list_images(self, session_id: UUID) -> list[dict]:
         response = await (
             self.db.table("generation_images")
-            .select("*")
-            .eq("session_id", session_id)
+            .select("*, generation_inputs!inner(session_id)")
+            .eq("generation_inputs.session_id", session_id)
             .execute()
         )
 
@@ -717,8 +725,8 @@ class StorageManager:
 
             session = (
                 await self.db.table("sessions")
-                .select("id")
-                .eq("id", session_id)
+                .select("session_id")
+                .eq("session_id", session_id)
                 .maybe_single()
                 .execute()
             )
@@ -731,7 +739,7 @@ class StorageManager:
             return None
 
     async def store_images(self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]) -> list[dict]:
-        ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+        ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg", "image/tiff"}
 
         async with httpx.AsyncClient() as http_client:
             async def fetch_and_store(img: dict) -> dict | None:
@@ -751,16 +759,10 @@ class StorageManager:
                         file_options={"content-type": content_type},
                     )
 
-                    await self.db.table("generation_images").insert({
-                        "session_id": session_id,
-                        "storage_path": path,
-                        "filename": img["filename"],
-                        "content_type": img.get("content_type", "image/png"),
-                        "description": image_descriptions.get(img["filename"]),
-                    }).execute()
                     return {
-                        **{k: v for k, v in img.items() if k != "url"},
+                        **{k: v for k, v in img.items() if k not in ("url", "content_type")},
                         "storage_path": path,
+                        "content_type": content_type,
                         "description": image_descriptions.get(img["filename"]),
                     }
                 except StorageError:
@@ -858,7 +860,31 @@ class ImageFilter:
         self.exclude_categories = {"logo", "icon", "banner", "header", "footer"}
         self.MAX_CONCURRENT = 3
         self.client = client
-        self.BATCH_SIZE = 5
+        self.ALLOWED_IMAGE_DOMAINS = {
+            "api.llamacloud.com",
+            "storage.llamaindex.ai",
+            # add actual LlamaParse image domains here
+        }
+    
+    def _is_safe_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            
+            if parsed.scheme != "https":
+                return False
+            
+            if parsed.netloc not in self.ALLOWED_IMAGE_DOMAINS:
+                return False
+            
+            if parsed.username or parsed.password:
+                return False
+            
+            if parsed.port and parsed.port != 443:
+                return False
+            
+            return True
+        except Exception:
+            return False
 
     async def heuristic_filter(self, images: list[dict]) -> list[dict]:
         if not images:
@@ -896,7 +922,8 @@ class ImageFilter:
             b"\x89PNG": "image/png",
             b"\xff\xd8\xff": "image/jpeg",
             b"RIFF": "image/webp",
-            b"GIF8": "image/gif",
+            b"II*\x00": "image/tiff",
+            b"MM\x00*": "image/tiff",
         }
 
         def validate_image_bytes(data: bytes) -> str | None:
@@ -966,7 +993,7 @@ class ImageFilter:
                     if tool_use is None:
                         raise ValueError("Validator did not return a tool call.")
                     
-                    entry = tool_use.input["filtered_images"]
+                    entry = tool_use.input["filtered_images"][0]
 
                     if entry["keep"]:
                         return image, entry.get("description")
@@ -1197,11 +1224,22 @@ class QuestionGenerator:
                 storage_manager.download_image(session_id, path)
                 for img in raw_images
                 for path in (img["storage_path"],)
-            )
+            ),
+            return_exceptions=True
         )
+
+        image_token_budget = 0
         for i, (img, image_bytes) in enumerate(zip(raw_images, image_bytes_list), start=1):
+            estimated_tokens = estimate_tokens(img["bbox"]) if img.get("bbox") else 0
+            if image_token_budget + estimated_tokens > MAX_PROMPT_IMAGE_TOKENS:
+                description = img.get("description")
+                if description:
+                    message_content.append({"type": "text", "text": f"Image {i} description (budget exceeded):\n{description}"})
+                continue
+                
             if image_bytes is not None:
                 message_content.append(await self._build_image_block(image_bytes, img.get("content_type", "image/png")))
+                image_token_budget += estimated_tokens
             description = img.get("description")
             if description:
                 message_content.append({"type": "text", "text": f"Image {i} description:\n{description}"})
@@ -1425,7 +1463,7 @@ class DifficultyController:
     def clamp(self, value, min_val, max_val):
         return max(min_val, min(max_val, value))
     
-    def compute_evidence(self, tr: TopicResult, stats: TopicStats, question_difficulty: float) -> TopicEvidence:
+    def compute_evidence(self, tr: TopicResult, stats: TopicStats, question_difficulty: int) -> TopicEvidence:
         adaptation_contribution = tr.adaptation_signal * self.MAX_ADAPTATION_INFLUENCE * tr.confidence
 
         actual_score = tr.score
@@ -1443,8 +1481,8 @@ class DifficultyController:
             misconception=tr.misconception,
         )
 
-    def compute_elo_update(self, stats: TopicStats, evidence: TopicEvidence) -> float:
-        return self.clamp(stats.elo + evidence.elo_delta, 300, 3000)
+    def compute_elo_update(self, stats: TopicStats, evidence: TopicEvidence) -> int:
+        return int(round(self.clamp(stats.elo + evidence.elo_delta, 300, 3000)))
 
     def compute_bkt_update(self, stats: TopicStats, evidence: TopicEvidence) -> float:
         P_SLIP = 0.1
@@ -1503,11 +1541,12 @@ class SessionStore:
 
     async def get(self, session_id: UUID) -> SessionState:
         try:
-            row_res, questions_res, chat_res, history_res = await asyncio.gather(
+            row_res, questions_res, chat_res, history_res, topic_stats_res = await asyncio.gather(
                 self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
                 self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
                 self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
-                self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
+                self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("answered_at", desc=True).limit(10).execute(),
+                self.db.table("topic_stats").select("*").eq("session_id", session_id).execute()
             )
         except Exception as e:
             # distinguish between not found and infrastructure failure
@@ -1518,8 +1557,16 @@ class SessionStore:
         if not row_res.data:
             raise SessionNotFoundError(f"Session {session_id} not found")
 
-        raw_stats = row_res.data.get("topic_stats", {})
-        topic_stats = {t: TopicStats(**s) for t, s in raw_stats.items()}
+        topic_stats = {
+            row["topic"]: TopicStats(
+                topic=row["topic"],
+                attempts=row["attempts"],
+                elo=row["elo"],
+                p_known=row["p_known"],
+            )
+
+            for row in topic_stats_res.data
+        }
 
         return SessionState(
             session_id=session_id,
@@ -1531,33 +1578,50 @@ class SessionStore:
             history=[QuestionResult(**h) for h in history_res.data],
         )
 
+    async def create(self, session_id: UUID, label: str) -> SessionState:
+        await self.db.table("sessions").insert({
+            "session_id": session_id,
+            "label": label,
+        }).execute()
+        return SessionState(session_id=session_id, label=label)
+
     async def get_or_create(self, session_id: UUID, label: str) -> SessionState:
         try:
             return await self.get(session_id)
-        except Exception:
-            await self.db.table("sessions").insert({
-                "session_id": session_id,
-                "label": label,
-                "topic_stats": {},
-            }).execute()
-            return SessionState(session_id=session_id, label=label)
+        except SessionNotFoundError:
+            return await self.create(session_id, label)
+        # DatabaseError bubbles up
 
     async def save(self, session_id: UUID, state: SessionState) -> None:
-        await self.db.table("sessions").update({
-            "current_question_index": state.current_question_index,
-            "topic_stats": {
-                t: s.model_dump() for t, s in state.topic_stats.items()
-            },
-            "last_active_at": "now()",
-        }).eq("session_id", session_id).execute()
+        updates = [
+            self.db.table("sessions").update({
+                "current_question_index": state.current_question_index,
+                "last_active_at": "now()",
+            }).eq("session_id", session_id).execute()
+        ]
+
+        if state.topic_stats:
+            updates.append(
+                self.db.table("topic_stats").upsert(
+                    [
+                        {
+                            **stats.model_dump(),
+                            "session_id": session_id,
+                        }
+                        for stats in state.topic_stats.values()
+                    ],
+                    on_conflict="session_id,topic"
+                ).execute()
+            )
+        await asyncio.gather(*updates)
 
     async def replace_questions(self, session_id: UUID, questions: list[Question]) -> None:
-        await self.db.table("questions").delete().eq("session_id", str(session_id)).execute()
+        await self.db.table("questions").delete().eq("session_id", session_id).execute()
         if questions:
             await self.db.table("questions").insert([
                 {
                     **q.model_dump(),
-                    "session_id": str(session_id),
+                    "session_id": session_id,
                     "position": i,
                 }
                 for i, q in enumerate(questions)
@@ -1586,7 +1650,7 @@ class SessionStore:
         assistant_reply: str
     ) -> None:
         await self.db.rpc("append_chat_turn", {
-            "p_session_id": str(session_id),
+            "p_session_id": session_id,
             "p_user_content": user_message,
             "p_assistant_content": assistant_reply,
         }).execute()
@@ -1594,49 +1658,66 @@ class SessionStore:
     async def delete_chat(self, session_id: UUID) -> None:
         await self.db.table("chat_messages").delete().eq("session_id", session_id).execute()
 
-    async def append_generation_input(
-        self,
-        session_id: UUID,
-        content: str,
-        raw_markdown: str,
-        raw_images: list[dict],         # already stored; contain storage_path, no url
-        pdf_path: str,
-        questions: list[Question],
+    async def store_upload_context(
+            self,
+            session_id: UUID,
+            content: str,
+            raw_markdown: str,
+            pdf_path: str,
+            stored_images: list[dict],         # already stored; contain storage_path, no url
     ) -> None:
-        topics_covered = list({t for q in questions for t in q.topics})
-
-        await self.db.table("generation_inputs").insert({
+        res = await self.db.table("generation_inputs").insert({
             "session_id": session_id,
             "content": content,
             "raw_markdown": raw_markdown,
-            "images": raw_images,
             "pdf_path": pdf_path,
-            "topics_covered": topics_covered
+            "questions_generated": False,
         }).execute()
-    
-    async def store_upload_context(
-        self,
-        session_id: UUID,
-        content: str,
-        raw_markdown: str,
-        pdf_path: str,
-    ) -> None:
-        await self.db.table("upload_context").upsert({
-            "session_id": str(session_id),
-            "content": content,
-            "raw_markdown": raw_markdown,
-            "pdf_path": pdf_path,
-            "created_at": "now()",
-        }, on_conflict="session_id").execute()
+        generation_input_id = res.data[0]["generation_input_id"]
 
+        if stored_images:
+            await self.db.table("generation_images").insert([
+                {
+                    "generation_input_id": generation_input_id,
+                    "storage_path": img["storage_path"],
+                    "filename": img["filename"],
+                    "content_type": img["content_type"],
+                    "description": img.get("description"),
+                }
+                for img in stored_images
+            ]).execute()
+
+    
     async def get_upload_context(self, session_id: UUID) -> dict | None:
-        result = await (self.db.table("upload_context")
-            .select("content, raw_markdown, pdf_path")
-            .eq("session_id", str(session_id))
+        res = await (self.db.table("generation_inputs")
+            .select("content, raw_markdown, pdf_path, generation_input_id")
+            .eq("session_id", session_id)
+            .eq("questions_generated", False)
+            .order("created_at", desc=True)
+            .limit(1)
             .maybe_single()
             .execute()
         )
-        return result.data
+        return res.data
+
+    async def append_generation_input(
+        self,
+        generation_input_id: UUID,
+        questions: list[Question],
+    ) -> None:
+        topics_covered = list({t for q in questions for t in q.topic_difficulties.keys()})
+
+        awaitables = [
+            self.db.table("generation_inputs").update({
+                "questions_generated": True,
+            }).eq("generation_input_id", generation_input_id).execute(),
+            self.db.table("generation_topics").insert([
+                {"generation_input_id": generation_input_id, "topic": topic}
+                for topic in topics_covered
+            ]).execute(),
+        ]
+
+        await asyncio.gather(*awaitables)
     
     async def append_topic_updates(self, session_id: UUID, question_id: str, updates: list[TopicUpdate])  -> None:
         await self.db.table("elo_history").insert([
@@ -1663,17 +1744,12 @@ class SessionStore:
             return None
             
         # get all topics covered by previous generations
-        prev_generations = await (self.db.table("generation_inputs")
-            .select("topics_covered")
-            .eq("session_id", str(session_id))
+        prev_generations = await (self.db.table("generation_topics")
+            .select("topic, generation_inputs!inner(session_id)")
+            .eq("generation_inputs.session_id", session_id)
             .execute()
         )
-        
-        all_previous_topics = {
-            t 
-            for gen in prev_generations.data 
-            for t in (gen.get("topics_covered") or [])
-        }
+        all_previous_topics = {row["topic"] for row in prev_generations.data}
         
         # filter profile to only topics seen in previous generations
         profile = state.topic_profile()
@@ -1687,6 +1763,17 @@ class SessionStore:
             return None
             
         return filtered
+
+    async def get_recent_topic_history(self, session_id: UUID, topic: str, limit: int = 5) -> list[float]:
+        res = await (self.db.table("elo_history")
+            .select("new_elo")
+            .eq("session_id", session_id)
+            .eq("topic", topic)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [row["new_elo"] for row in reversed(res.data)]
 
 
 # ---------------------------------------------------------------------------
@@ -1753,7 +1840,7 @@ async def upload(
 
     # filter
     filtered_images = await image_filter.heuristic_filter(images)
-    filtered_images, descriptions = await image_filter.semantic_filter(filtered_images, markdown)
+    filtered_images, descriptions = await image_filter.semantic_filter(filtered_images)
     filtered_items = await text_filter.item_filter(items)
 
     # prioritize
@@ -1770,12 +1857,12 @@ async def upload(
 
     # store PDF and images concurrently — presigned URLs are ephemeral so do
     # this before returning; storage_path replaces url in raw_images
-    pdf_path = await asyncio.gather(
+    pdf_path, stored_images = await asyncio.gather(
         storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
         storage_manager.store_images(session_id, filtered_images, descriptions),
     )
 
-    session_store.store_upload_context(session_id, content, markdown, pdf_path)
+    await session_store.store_upload_context(session_id, content, markdown, pdf_path, stored_images)
 
     return UploadResponse(
         session_id=session_id,
@@ -1791,7 +1878,12 @@ async def reset_session(
     session_store: SessionStore = Depends(get_session_store),
 ):
     async with _session_locks[session_id]:
-        state = await session_store.get(session_id)
+        try:
+            state = await session_store.get(session_id)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        except DatabaseError:
+            raise HTTPException(status_code=503, detail="Database unavailable, please retry")
         
         state.current_question_index = 0
         await session_store.save(session_id, state)
@@ -1807,21 +1899,20 @@ async def generate(
     storage_manager: StorageManager = Depends(get_storage_manager),
 ):
 
-    state = await session_store.get_or_create(session_id, label=req.label)
-    profile = session_store.get_relevant_profile(session_id, state)
+    try:
+        state = await session_store.get_or_create(session_id, label=req.label)
+    except DatabaseError:
+        raise HTTPException(status_code=503, detail="Database unavailable, please retry")
+    profile = await session_store.get_relevant_profile(session_id, state)
     raw_images = await storage_manager.list_images(session_id)
-
-    result = await question_generator.generate_questions(
-        req.content, raw_images, storage_manager, profile
-    )
-
     upload_context = await session_store.get_upload_context(session_id)
     if upload_context is None and not req.raw_markdown:
         raise HTTPException(status_code=400, detail="No upload context found for this session")
-    
     content = upload_context["content"] if upload_context else req.raw_markdown
-    raw_markdown = upload_context["raw_markdown"] if upload_context else req.raw_markdown
-    pdf_path = upload_context["pdf_path"] if upload_context else ""
+
+    result = await question_generator.generate_questions(
+        content, raw_images, storage_manager, session_id, profile
+    )
 
     if result.status != GenerationStatus.GENERATED:
         raise HTTPException(
@@ -1843,22 +1934,25 @@ async def generate(
         )
     
     async with _session_locks[session_id]:
-        state = await session_store.get_or_create(session_id, label=req.label)
+        try:
+            state = await session_store.get(session_id)
+        except SessionNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        except DatabaseError:
+            raise HTTPException(status_code=503, detail="Database unavailable, please retry")
+        
         state.questions = result.questions
         state.current_question_index = 0
-        await session_store.replace_questions(session_id, result.questions)
-        await session_store.save(session_id, state)
-        # only store inputs that produced validated questions — keeps training
-        # data clean; failed generations are a separate signal if needed later
-        await session_store.append_generation_input(
-            session_id=session_id,
-            content=content,
-            raw_markdown=raw_markdown,
-            raw_images=raw_images,
-            pdf_path=pdf_path,
-            questions=result.questions
+        await asyncio.gather(
+            session_store.replace_questions(session_id, result.questions),
+            # only store inputs that produced validated questions — keeps training
+            # data clean; failed generations are a separate signal if needed later
+            session_store.append_generation_input(
+                generation_input_id=upload_context["generation_input_id"],
+                questions=result.questions,
+            ),
         )
-
+        await session_store.save(session_id, state)
     return result
 
 
@@ -1884,8 +1978,10 @@ async def submit_answer(
     async with _session_locks[session_id]:
         try:
             state = await session_store.get(session_id)
-        except Exception:
+        except SessionNotFoundError:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        except DatabaseError:
+            raise HTTPException(status_code=503, detail="Database unavailable, please retry")
 
         # get topics from the question being answered
         question = next(
@@ -1901,7 +1997,7 @@ async def submit_answer(
                 state=state,
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=f"Error: {e}")
+            raise HTTPException(status_code=400, detail=f"Error: {e}")
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
@@ -1924,12 +2020,12 @@ async def submit_answer(
         state, updates = difficulty_controller.update(state, question_result, question)
 
         await asyncio.gather(
-            session_store.save(session_id, state),
             session_store.append_answer(session_id, req.response, question_result),
+            session_store.append_topic_updates(session_id, question_result.question_id, updates),
         )
 
         state.advance()
-        await session_store.append_topic_updates(session_id, question_result.question_id, updates)
+        await session_store.save(session_id, state)
 
     return AnswerResponse(
         feedback=question_result.feedback,
@@ -1949,8 +2045,10 @@ async def chat(
 ):
     try:
         state = await session_store.get(session_id)
-    except Exception:
+    except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    except DatabaseError:
+        raise HTTPException(status_code=503, detail="Database unavailable, please retry")
 
     context = SessionContext.from_state(state)
     reply = await study_chat.respond(req.user_message, context)

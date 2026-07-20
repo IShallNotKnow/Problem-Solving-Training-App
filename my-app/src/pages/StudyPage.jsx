@@ -1,166 +1,570 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
-import { FiPaperclip, FiPlus, FiBook } from 'react-icons/fi';
+import { useToast } from '../context/ToastContext';
+import { apiFetch, apiUpload } from '../utils/api';
+import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
 import { IoSend } from 'react-icons/io5';
+import { Switch } from 'antd';
 import './StudyPage.css';
 
-function StudyPage() {
+export default function StudyPage() {
+    const { sessionId } = useParams();
+    const navigate = useNavigate();
     const { theme, toggleTheme } = useTheme();
+    const toast = useToast();
 
-    const [chats, setChats] = useState([
-        { id: 1, title: 'OS scheduling algorithms', messages: [] },
-    ]);
-    const [activeChatId, setActiveChatId] = useState(1);
+    const [sessionState, setSessionState] = useState(null);
+    const [messages, setMessages] = useState([]);
+    const [mode, setMode] = useState('idle'); // 'idle' | 'answer' | 'chat' | 'complete'
     const [inputText, setInputText] = useState('');
+    const [inputError, setInputError] = useState(null);
     const [file, setFile] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [sessionLoading, setSessionLoading] = useState(true);
+    const [sessionError, setSessionError] = useState(null);       // full page error state
+    const [retryError, setRetryError] = useState(null);           // retry banner error
+
     const inputRef = useRef(null);
     const messagesEndRef = useRef(null);
 
-    const activeChat = chats.find(c => c.id === activeChatId);
+    // ── init ──────────────────────────────────────────────────
+    useEffect(() => {
+        const initSession = async () => {
+            try {
+                const state = await apiFetch(`/sessions/${sessionId}`);
+                setSessionState(state);
+
+                if (state.chat_history?.length > 0) {
+                    const loadedMessages = state.chat_history.map(msg => ({
+                        role: msg.role || (msg.type === 'human' ? 'user' : 'assistant'),
+                        content: msg.content || msg.text || '',
+                        type: msg.type || 'text',
+                        file: msg.file || null,
+                        score: msg.score,
+                        misconception: msg.misconception,
+                    }));
+                    setMessages(loadedMessages);
+                }
+
+                const hasQuestions = state.questions?.length > 0;
+                const exhausted = state.current_question_index >= state.questions?.length;
+                if (!hasQuestions) {
+                    setMode('idle');
+                } else if (exhausted) {
+                    setMode('complete');
+                } else {
+                    setMode('answer');
+                }
+            } catch (err) {
+                // 404 = new session, not a real error
+                if (err.status === 404) return;
+                // 403 or 500 = broken, show full page error
+                setSessionError(
+                    err.status === 403
+                        ? "You don't have access to this session."
+                        : 'Could not load this session. Please try again.'
+                );
+            } finally {
+                setSessionLoading(false);
+                scrollToBottom();
+            }
+        };
+
+        initSession();
+    }, [sessionId]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     };
 
-    const handleNewChat = () => {
-        const newId = Date.now();
-        setChats(prev => [...prev, { id: newId, title: 'New study set', messages: [] }]);
-        setActiveChatId(newId);
-        setInputText('');
-        setFile(null);
+    // ── mode toggle ───────────────────────────────────────────
+    const handleModeToggle = (newMode) => {
+        const questions = sessionState?.questions;
+        const index = sessionState?.current_question_index;
+        if (newMode === 'answer' && (!questions?.length || index >= questions.length)) return;
+        setMode(newMode);
     };
 
-    const handleSend = async () => {
-        if (!inputText.trim() && !file) return;
+    // ── upload + generate ─────────────────────────────────────
+    const handleUploadAndGenerate = async () => {
+        const currentInput = inputText;
+        const currentFile = file;
+        const label = currentInput.slice(0, 30) || currentFile?.name || 'Study set';
 
-        const userMessage = { role: 'user', content: inputText, file: file?.name || null };
-
-        setChats(prev => prev.map(c =>
-            c.id === activeChatId
-                ? { ...c, messages: [...c.messages, userMessage] }
-                : c
-        ));
+        setMessages(prev => [...prev, {
+            role: 'user',
+            content: currentInput,
+            file: currentFile?.name || null,
+        }]);
         setInputText('');
         setFile(null);
+        setRetryError(null);
         if (inputRef.current) inputRef.current.value = '';
         setLoading(true);
 
         try {
-            const formData = new FormData();
-            formData.append('text', inputText);
-            if (file) formData.append('file', file);
+            if (currentFile) {
+                const formData = new FormData();
+                formData.append('file', currentFile);
+                await apiUpload(
+                    `/sessions/${sessionId}/upload?label=${encodeURIComponent(label)}`,
+                    formData
+                );
+            }
 
-            const response = await fetch('http://localhost:8000/generate', {
+            const result = await apiFetch(`/sessions/${sessionId}/generate`, {
                 method: 'POST',
-                body: formData,
+                body: JSON.stringify({
+                    label,
+                    raw_markdown: currentFile ? '' : currentInput,
+                }),
             });
-            const data = await response.json();
 
-            const assistantMessage = { role: 'assistant', content: data.questions };
-
-            setChats(prev => prev.map(c =>
-                c.id === activeChatId
-                    ? {
-                        ...c,
-                        title: inputText.slice(0, 30) || file?.name || 'Study set',
-                        messages: [...c.messages, assistantMessage]
-                    }
-                    : c
-            ));
+            setSessionState(prev => ({
+                ...prev,
+                questions: result.questions,
+                current_question_index: 0,
+            }));
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: result.questions,
+                type: 'questions',
+            }]);
+            setMode('answer');
         } catch (err) {
-            console.error('Error:', err);
-            setChats(prev => prev.map(c =>
-                c.id === activeChatId
-                    ? { ...c, messages: [...c.messages, { role: 'assistant', content: 'Something went wrong. Please try again.' }] }
-                    : c
-            ));
+            // retry banner — session is broken until resolved
+            setRetryError({
+                message: err.status < 500
+                    ? err.message
+                    : 'Generation failed — please try again.',
+                onRetry: () => {
+                    setRetryError(null);
+                    handleUploadAndGenerate();
+                },
+            });
         } finally {
             setLoading(false);
             scrollToBottom();
         }
     };
 
-    const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            handleSend();
+    // ── reset + regenerate ────────────────────────────────────
+    const handleReset = async () => {
+        setLoading(true);
+        try {
+            await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
+            const result = await apiFetch(`/sessions/${sessionId}/generate`, {
+                method: 'POST',
+                body: JSON.stringify({ label: sessionState.label }),
+            });
+
+            setSessionState(prev => ({
+                ...prev,
+                questions: result.questions,
+                current_question_index: 0,
+            }));
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                type: 'questions',
+                content: result.questions,
+            }]);
+            setMode('answer');
+        } catch (err) {
+            // toast only — completion banner still visible, user can retry
+            const msg = err.status < 500
+                ? err.message
+                : 'Could not generate new questions — please try again.';
+            toast.error(msg);
+        } finally {
+            setLoading(false);
         }
     };
 
-    return (
-        <div className="sp-wrap">
-            <aside className="sp-sidebar">
-                <div className="sp-sidebar-header">
-                    <span className="sp-brand">studykit</span>
-                    <button className="sp-theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
-                        {theme === 'dark' ? '☀' : '☾'}
+    // ── answer ────────────────────────────────────────────────
+    const handleAnswer = async () => {
+        const currentInput = inputText;
+        const currentQuestion = sessionState?.questions[sessionState?.current_question_index];
+        if (!currentQuestion) return;
+
+        setMessages(prev => [...prev, { role: 'user', content: currentInput }]);
+        setInputText('');
+        setLoading(true);
+
+        try {
+            const data = await apiFetch(`/sessions/${sessionId}/answer`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    question_id: currentQuestion.question_id,
+                    response: currentInput,
+                }),
+            });
+
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: data.feedback,
+                score: data.score,
+                misconception: data.misconception,
+                type: 'answer_feedback',
+            }]);
+
+            const nextIndex = (sessionState?.current_question_index ?? 0) + 1;
+            const total = sessionState?.questions?.length ?? 0;
+
+            setSessionState(prev => ({ ...prev, current_question_index: nextIndex }));
+
+            if (nextIndex >= total) {
+                setMode('complete');
+            }
+        } catch (err) {
+            // error bubble — direct reply to user's answer attempt
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: err.status < 500
+                    ? err.message
+                    : 'Could not submit your answer — please try again.',
+                type: 'error',
+            }]);
+        } finally {
+            setLoading(false);
+            scrollToBottom();
+        }
+    };
+
+    // ── chat ──────────────────────────────────────────────────
+    const handleChat = async () => {
+        const currentInput = inputText;
+
+        setMessages(prev => [...prev, { role: 'user', content: currentInput }]);
+        setInputText('');
+        setLoading(true);
+
+        try {
+            const data = await apiFetch(`/sessions/${sessionId}/chat`, {
+                method: 'POST',
+                body: JSON.stringify({ user_message: currentInput }),
+            });
+
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: data.reply,
+                type: 'chat_response',
+            }]);
+        } catch (err) {
+            // error bubble — direct reply to user's chat message
+            setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: err.status < 500
+                    ? err.message
+                    : 'Something went wrong — please try again.',
+                type: 'error',
+            }]);
+        } finally {
+            setLoading(false);
+            scrollToBottom();
+        }
+    };
+
+    // ── send router ───────────────────────────────────────────
+    const validateInput = (text, currentMode) => {
+        if (currentMode === 'answer') {
+            if (!text.trim()) return 'Answer cannot be empty';
+            if (text.trim().length < 3) return 'Answer is too short';
+        }
+        if (currentMode === 'chat') {
+            if (!text.trim()) return 'Message cannot be empty';
+        }
+        return null;
+    };
+
+    const handleSend = async () => {
+        if (!inputText.trim() && !file) return;
+
+        if (mode === 'answer' || mode === 'chat') {
+            const error = validateInput(inputText, mode);
+            if (error) {
+                setInputError(error);
+                return;
+            }
+        }
+
+        setInputError(null);
+
+        if (file || mode === 'idle') {
+            await handleUploadAndGenerate();
+        } else if (mode === 'answer') {
+            await handleAnswer();
+        } else {
+            await handleChat();
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (!loading) handleSend();
+        }
+    };
+
+    // ── derived ───────────────────────────────────────────────
+    const hasActiveQuestions =
+        sessionState?.questions?.length > 0 &&
+        sessionState.current_question_index < sessionState.questions.length;
+
+    const currentQuestion = hasActiveQuestions
+        ? sessionState.questions[sessionState.current_question_index]
+        : null;
+
+    const sessionTitle = sessionState?.label || 'New session';
+
+    const placeholder =
+        mode === 'answer' && currentQuestion
+            ? `Answer Q${sessionState.current_question_index + 1}...`
+            : mode === 'chat'
+            ? 'Ask studykit anything...'
+            : 'Paste notes or attach a file to get started...';
+
+    // ── full page loading ─────────────────────────────────────
+    if (sessionLoading) {
+        return (
+            <div className="sp-wrap sp-loading-screen">
+                <div className="sp-loading">
+                    <span /><span /><span />
+                </div>
+            </div>
+        );
+    }
+
+    // ── full page error (403, 500, unrecoverable) ─────────────
+    if (sessionError) {
+        return (
+            <div className="sp-wrap sp-error-screen">
+                <div className="sp-error-state">
+                    <div className="sp-error-icon">
+                        <FiAlertTriangle size={28} />
+                    </div>
+                    <p className="sp-error-title">Something went wrong</p>
+                    <p className="sp-error-sub">{sessionError}</p>
+                    <button
+                        className="sp-error-back"
+                        onClick={() => navigate('/dashboard')}
+                    >
+                        <FiArrowLeft size={14} />
+                        Back to dashboard
                     </button>
                 </div>
+            </div>
+        );
+    }
 
-                <button className="sp-new-chat" onClick={handleNewChat}>
-                    <FiPlus size={15} />
-                    New study set
+    return (
+        <div className="sp-wrap">
+            {/* ── header ── */}
+            <header className="sp-header">
+                <button
+                    className="sp-back-btn"
+                    onClick={() => navigate('/dashboard')}
+                    aria-label="Back to dashboard"
+                >
+                    <FiArrowLeft size={16} />
+                    Sessions
                 </button>
+                <span className="sp-session-title">{sessionTitle}</span>
+                <button
+                    className="sp-theme-btn"
+                    onClick={toggleTheme}
+                    aria-label="Toggle theme"
+                >
+                    {theme === 'dark' ? <FiSun size={15} /> : <FiMoon size={15} />}
+                </button>
+            </header>
 
-                <div className="sp-chat-list">
-                    <div className="sp-chat-list-label">Recent</div>
-                    {chats.map(chat => (
-                        <button
-                            key={chat.id}
-                            className={`sp-chat-item ${chat.id === activeChatId ? 'active' : ''}`}
-                            onClick={() => setActiveChatId(chat.id)}
-                        >
-                            <FiBook size={14} className="sp-chat-icon" />
-                            <span className="sp-chat-title">{chat.title}</span>
-                        </button>
-                    ))}
+            {/* ── progress bar ── */}
+            {sessionState?.questions?.length > 0 && (
+                <div className="sp-progress-wrap">
+                    <div className="sp-progress-track">
+                        <div
+                            className="sp-progress-fill"
+                            style={{
+                                width: `${Math.min(
+                                    (sessionState.current_question_index / sessionState.questions.length) * 100,
+                                    100
+                                )}%`
+                            }}
+                        />
+                    </div>
+                    <span className="sp-progress-label">
+                        {sessionState.current_question_index}/{sessionState.questions.length}
+                    </span>
                 </div>
+            )}
 
-                <div className="sp-sidebar-footer">
-                    <a href="/" className="sp-footer-link">Home</a>
-                    <a href="/login" className="sp-footer-link">Sign out</a>
-                </div>
-            </aside>
-
+            {/* ── messages ── */}
             <main className="sp-main">
-                <div className="sp-messages" id="messages">
-                    {activeChat?.messages.length === 0 && (
+                <div className="sp-messages">
+                    {messages.length === 0 && (
                         <div className="sp-empty">
                             <div className="sp-empty-icon">⌥</div>
                             <div className="sp-empty-title">Upload your slides or paste your notes</div>
-                            <div className="sp-empty-sub">studykit will generate study questions based on what you share.</div>
+                            <div className="sp-empty-sub">
+                                studykit will generate study questions based on what you share.
+                            </div>
                         </div>
                     )}
 
-                    {activeChat?.messages.map((msg, i) => (
+                    {messages.map((msg, i) => (
                         <div key={i} className={`sp-message sp-message--${msg.role}`}>
-                            <div className="sp-message-bubble">
+                            <div className={`sp-message-bubble ${msg.type === 'error' ? 'sp-message-bubble--error' : ''}`}>
                                 {msg.file && (
                                     <div className="sp-file-tag">
                                         <FiPaperclip size={12} />
                                         {msg.file}
                                     </div>
                                 )}
-                                <span>{msg.content}</span>
+
+                                {msg.type === 'questions' ? (
+                                    <div className="sp-questions">
+                                        <p className="sp-questions-label">
+                                            {msg.content.length} questions generated — starting below.
+                                        </p>
+                                        <div className="sp-questions-preview">
+                                            {msg.content.slice(0, 3).map((q, qi) => (
+                                                <div key={q.question_id} className="sp-question-chip">
+                                                    <span className="sp-question-chip-num">Q{qi + 1}</span>
+                                                    <span className="sp-question-chip-type">{q.question_type}</span>
+                                                </div>
+                                            ))}
+                                            {msg.content.length > 3 && (
+                                                <span className="sp-question-chip sp-question-chip--more">
+                                                    +{msg.content.length - 3} more
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                ) : msg.type === 'answer_feedback' ? (
+                                    <div className="sp-feedback">
+                                        <div className={`sp-score-badge sp-score-badge--${msg.score >= 0.85 ? 'correct' : msg.score >= 0.5 ? 'partial' : 'incorrect'}`}>
+                                            {msg.score >= 0.85 ? '✓ Correct' : msg.score >= 0.5 ? '~ Partial' : '✗ Incorrect'}
+                                            <span className="sp-score-pct">{Math.round(msg.score * 100)}%</span>
+                                        </div>
+                                        <p className="sp-feedback-text">{msg.content}</p>
+                                        {msg.misconception && (
+                                            <p className="sp-misconception">
+                                                Common mistake: {msg.misconception}
+                                            </p>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <span>{msg.content}</span>
+                                )}
                             </div>
                         </div>
                     ))}
 
+                    {/* ── current question card ── */}
+                    {currentQuestion && mode === 'answer' && (
+                        <div className="sp-question-card">
+                            <div className="sp-question-card-header">
+                                <span className="sp-question-num">
+                                    Q{sessionState.current_question_index + 1} of {sessionState.questions.length}
+                                </span>
+                                <span className="sp-question-type-badge">{currentQuestion.question_type}</span>
+                            </div>
+                            <p className="sp-question-prompt">{currentQuestion.prompt}</p>
+                            {currentQuestion.question_type === 'MCQ' && currentQuestion.choices && (
+                                <ul className="sp-choices">
+                                    {currentQuestion.choices.map((choice, ci) => (
+                                        <li key={ci} className="sp-choice">
+                                            <span className="sp-choice-letter">
+                                                {String.fromCharCode(65 + ci)}
+                                            </span>
+                                            {choice}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    )}
+
                     {loading && (
                         <div className="sp-message sp-message--assistant">
-                            <div className="sp-message-bubble sp-loading">
-                                <span />
-                                <span />
-                                <span />
+                            <div className="sp-message-bubble">
+                                <div className="sp-loading">
+                                    <span /><span /><span />
+                                </div>
                             </div>
                         </div>
                     )}
 
                     <div ref={messagesEndRef} />
                 </div>
+            </main>
 
+            {/* ── retry banner (upload/generate failure) ── */}
+            {retryError && (
+                <div className="sp-retry-banner">
+                    <div className="sp-retry-banner-inner">
+                        <div className="sp-retry-left">
+                            <FiAlertTriangle size={14} />
+                            <span>{retryError.message}</span>
+                        </div>
+                        <div className="sp-retry-actions">
+                            <button
+                                className="sp-retry-btn"
+                                onClick={retryError.onRetry}
+                                disabled={loading}
+                            >
+                                {loading ? 'Retrying...' : 'Retry'}
+                            </button>
+                            <button
+                                className="sp-retry-dismiss"
+                                onClick={() => setRetryError(null)}
+                                aria-label="Dismiss"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ── completion banner or input ── */}
+            {mode === 'complete' ? (
+                <div className="sp-completion-banner">
+                    <div className="sp-completion-banner-inner">
+                        <div className="sp-completion-text">
+                            <p className="sp-completion-title">Session complete</p>
+                            <p className="sp-completion-sub">
+                                {sessionState.questions.length} questions answered
+                            </p>
+                        </div>
+                        <div className="sp-completion-actions">
+                            <button
+                                className="sp-completion-btn--primary"
+                                onClick={handleReset}
+                                disabled={loading}
+                            >
+                                {loading ? 'Generating...' : 'Generate new questions'}
+                            </button>
+                            <Link to="/dashboard" className="sp-completion-btn--ghost">
+                                Back to dashboard
+                            </Link>
+                        </div>
+                    </div>
+                </div>
+            ) : (
                 <div className="sp-input-wrap">
+                    {hasActiveQuestions && (
+                        <div className="sp-toggle-row">
+                            <Switch
+                                checked={mode === 'chat'}
+                                checkedChildren="💬 Chat"
+                                unCheckedChildren="📝 Answer"
+                                onChange={(checked) => handleModeToggle(checked ? 'chat' : 'answer')}
+                            />
+                        </div>
+                    )}
+
                     <div className="sp-input-box">
                         <input
                             type="file"
@@ -175,45 +579,61 @@ function StudyPage() {
                             <div className="sp-file-preview">
                                 <FiPaperclip size={12} />
                                 <span>{file.name}</span>
-                                <button onClick={() => { setFile(null); inputRef.current.value = ''; }}>✕</button>
+                                <button onClick={() => {
+                                    setFile(null);
+                                    if (inputRef.current) inputRef.current.value = '';
+                                }}>✕</button>
                             </div>
                         )}
 
                         <div className="sp-input-row">
-                            <button
-                                className="sp-attach-btn"
-                                type="button"
-                                onClick={() => inputRef.current?.click()}
-                                aria-label="Attach file"
-                            >
-                                <FiPaperclip size={18} />
-                            </button>
+                            {mode === 'idle' && (
+                                <button
+                                    className="sp-attach-btn"
+                                    type="button"
+                                    onClick={() => inputRef.current?.click()}
+                                    aria-label="Attach file"
+                                >
+                                    <FiPaperclip size={18} />
+                                </button>
+                            )}
 
                             <textarea
-                                className="sp-textarea"
+                                className={`sp-textarea ${inputError ? 'sp-textarea--error' : ''}`}
                                 value={inputText}
-                                onChange={(e) => setInputText(e.target.value)}
+                                onChange={(e) => {
+                                    setInputText(e.target.value);
+                                    if (inputError) setInputError(null);
+                                }}
                                 onKeyDown={handleKeyDown}
-                                placeholder="Paste notes or describe what to study..."
+                                placeholder={placeholder}
                                 rows={1}
+                                disabled={loading}
                             />
 
                             <button
                                 className="sp-send-btn"
                                 type="button"
                                 onClick={handleSend}
-                                disabled={!inputText.trim() && !file}
+                                disabled={(!inputText.trim() && !file) || loading}
                                 aria-label="Send"
                             >
                                 <IoSend size={18} />
                             </button>
                         </div>
                     </div>
-                    <div className="sp-input-hint">Press Enter to send · Shift+Enter for new line</div>
+
+                    {inputError && (
+                        <p className="sp-input-error">{inputError}</p>
+                    )}
+
+                    <div className="sp-input-hint">
+                        {mode === 'answer'
+                            ? 'Enter to submit answer · Shift+Enter for new line'
+                            : 'Enter to send · Shift+Enter for new line'}
+                    </div>
                 </div>
-            </main>
+            )}
         </div>
     );
 }
-
-export default StudyPage;

@@ -1,8 +1,11 @@
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import './HomePage.css';
 
 function HomePage() {
     const { theme, toggleTheme } = useTheme();
+    const { user } = useAuth();
 
     return (
         <div className="hp">
@@ -13,8 +16,12 @@ function HomePage() {
                     <button className="hp-theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
                         {theme === 'dark' ? '☀' : '☾'}
                     </button>
-                    <a href="/login" className="hp-nav-link">Sign in</a>
-                    <a href="/signup" className="hp-nav-btn">Get started</a>
+                    {user ? (
+                        <Link to="/dashboard" className="hp-nav-link">Dashboard</Link>
+                    ) : (
+                        <Link to="/login" className="hp-nav-link">Sign in</Link>
+                    )}
+                    <Link to="/signup" className="hp-nav-btn">Get started</Link>
                 </div>
             </nav>
 
@@ -28,7 +35,7 @@ function HomePage() {
                     tailored to what your professor actually cares about.
                 </p>
                 <div className="hp-actions">
-                    <a href="/signup" className="btn-hero">Upload your first slides</a>
+                    <Link to="/signup" className="btn-hero">Upload your first slides</Link>
                     <a href="#how-it-works" className="btn-ghost">See how it works</a>
                 </div>
             </section>
@@ -105,16 +112,18 @@ function HomePage() {
                 </div>
             </section>
 
-            <section className="hp-recent">
-                <div className="hp-section-row">
-                    <div className="hp-section-title">Recent study sets</div>
-                    <a href="/study" className="hp-section-action">View all</a>
-                </div>
-                <div className="hp-empty">
-                    <div className="hp-empty-title">No study sets yet</div>
-                    <div className="hp-empty-sub">Upload your first set of slides to get started.</div>
-                </div>
-            </section>
+            {user && (
+                <section className="hp-recent">
+                    <div className="hp-section-row">
+                        <div className="hp-section-title">Recent study sets</div>
+                        <Link to="/dashboard" className="hp-section-action">View all</Link>
+                    </div>
+                    <div className="hp-empty">
+                        <div className="hp-empty-title">No study sets yet</div>
+                        <div className="hp-empty-sub">Upload your first set of slides to get started.</div>
+                    </div>
+                </section>
+            )}
         </div>
     );
 }

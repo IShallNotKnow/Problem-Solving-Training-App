@@ -1,19 +1,29 @@
 import { useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import './LoginPage.css';
+import { supabase } from "../utils/supabase";
+import { useAuth } from '../context/AuthContext';
 
 function SignupPage() {
+    const { theme, toggleTheme } = useTheme();
+    const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirm, setConfirm] = useState('');
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
-    const { theme, toggleTheme } = useTheme();
+    const location = useLocation();
+    const navigate = useNavigate();
+    const { signUp } = useAuth();
+
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get('redirect') || '/dashboard';
 
     const handleSignup = async (e) => {
         e.preventDefault();
         setError(null);
-
+        
         if (password !== confirm) {
             setError('Passwords do not match.');
             return;
@@ -21,16 +31,22 @@ function SignupPage() {
 
         setLoading(true);
 
-        // replace with supabase call:
-        // const { error } = await supabase.auth.signUp({ email, password });
-        // if (error) setError(error.message);
-
-        setLoading(false);
+        try {
+            await signUp(email, password);
+            navigate(redirect); // goes to /dashboard or wherever they came from
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleGoogle = async () => {
-        // replace with supabase call:
-        // await supabase.auth.signInWithOAuth({ provider: 'google' });
+        try {
+            await signInWithGoogle();
+        } catch (err) {
+            setError(err.message);
+        }
     };
 
     return (
@@ -108,7 +124,7 @@ function SignupPage() {
                 </button>
 
                 <p className="signup-nudge">
-                    Already have an account? <a href="/login">Sign in</a>
+                    Already have an account? <Link to={`/login?redirect=${encodeURIComponent(redirect)}`} className="hp-nav-link">Sign in</Link>
                 </p>
             </div>
         </div>

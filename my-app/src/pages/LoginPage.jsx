@@ -1,29 +1,45 @@
 import { useState } from 'react';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import './LoginPage.css';
+import { supabase } from "../utils/supabase";
 
 function LoginPage() {
+    const { theme, toggleTheme } = useTheme();
+    const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
-    const { theme, toggleTheme } = useTheme();
+    const location = useLocation();
+    const navigate = useNavigate();
+    const { signIn, signInWithGoogle } = useAuth();
+
+    const params = new URLSearchParams(location.search);
+    const redirect = params.get('redirect') || '/dashboard';
 
     const handleLogin = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
 
-        // replace with supabase call:
-        // const { error } = await supabase.auth.signInWithPassword({ email, password });
-        // if (error) setError(error.message);
-
-        setLoading(false);
+        try {
+            await signIn(email, password);
+            navigate(redirect); // goes to /dashboard or wherever they came from
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleGoogle = async () => {
-        // replace with supabase call:
-        // await supabase.auth.signInWithOAuth({ provider: 'google' });
+        try {
+            await signInWithGoogle();
+        } catch (err) {
+            setError(err.message);
+        }
     };
 
     return (
@@ -91,7 +107,7 @@ function LoginPage() {
                 </button>
 
                 <p className="signup-nudge">
-                    Don't have an account? <a href="/signup">Sign up free</a>
+                    Don't have an account? <Link to={`/signup?redirect=${encodeURIComponent(redirect)}`} className="hp-nav-link">Sign up for free</Link>
                 </p>
             </div>
         </div>

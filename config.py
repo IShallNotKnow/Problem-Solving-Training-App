@@ -1,0 +1,14 @@
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    supabase_url: str
+    supabase_key: str
+    supabase_jwt_secret: str
+    llama_cloud_api_key: str
+    anthropic_api_key: str | None = None
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+settings = Settings()

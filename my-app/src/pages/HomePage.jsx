@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { useTheme } from '../context/ThemeContext';
-import { useAuth } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import './HomePage.css';
 
 function HomePage() {

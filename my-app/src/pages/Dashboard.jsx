@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useTheme } from '../context/ThemeContext.jsx';
 import { v4 as uuidv4 } from 'uuid';
-import { FiPlus, FiBook, FiClock, FiTrash2, FiSun, FiMoon } from 'react-icons/fi';
+import { FiPlus, FiBook, FiClock, FiTrash2, FiSun, FiMoon, FiLogOut } from 'react-icons/fi';
 import './Dashboard.css';
 
 function formatRelativeTime(dateStr) {
@@ -41,7 +41,7 @@ export default function Dashboard() {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch('http://localhost:8000/sessions');
+            const res = await apiFetch('http://localhost:8000/sessions');
             if (!res.ok) throw new Error('Failed to load sessions');
             const data = await res.json();
             setSessions(data);
@@ -68,7 +68,7 @@ export default function Dashboard() {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch('http://localhost:8000/sessions');
+            const res = await apiFetch('http://localhost:8000/sessions');
             if (!res.ok) throw new Error('Failed to load sessions');
             const data = await res.json();
         } catch (err) {
@@ -82,7 +82,7 @@ export default function Dashboard() {
         e.stopPropagation();
         setDeletingId(sessionId);
         try {
-            await fetch(`http://localhost:8000/sessions/${sessionId}`, { method: 'DELETE' });
+            await apiFetch(`http://localhost:8000/sessions/${sessionId}`, { method: 'DELETE' });
             setSessions(prev => prev.filter(s => s.session_id !== sessionId));
         } catch (err) {
             setError('Could not delete session.');

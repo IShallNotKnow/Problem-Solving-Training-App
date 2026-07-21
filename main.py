@@ -10,9 +10,7 @@ from collections import defaultdict
 import httpx
 import base64
 import json
-from typing import Literal
-from enum import Enum
-from pydantic import BaseModel, model_validator, Field, field_validator, ValidationError
+from pydantic import ValidationError
 from uuid import UUID, uuid4
 from supabase import acreate_client, AsyncClient
 from contextlib import asynccontextmanager
@@ -23,6 +21,7 @@ import traceback
 import logging
 from datetime import datetime
 from auth import get_current_user
+from config import settings
 from models import (
     Question, QuestionResult, QuestionValidationResult, GenerationResult, GenerationStatus, GenerateRequest,
     SessionState, SessionContext, SessionSummary, AnswerResponse, AnswerRequest, AnswerValidationResult,
@@ -32,8 +31,8 @@ from models import (
 
 load_dotenv()
 
-SUPABASE_URL: str = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL: str = settings.supabase_url
+SUPABASE_KEY: str = settings.supabase_key
 _session_locks: defaultdict[UUID, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 MAX_CONTENT_CHARS = 12_000
@@ -299,9 +298,7 @@ class StorageManager:
 
 class AsyncPDFProcessor:
     def __init__(self):
-        api_key = os.getenv("LLAMA_CLOUD_API_KEY")
-        if not api_key:
-            raise ValueError("LLAMA_CLOUD_API_KEY is not set")
+        api_key = settings.llama_cloud_api_key
         self.client = AsyncLlamaCloud(api_key=api_key)
 
     async def extract(self, file_bytes: bytes) -> tuple[str, list[dict], list[dict]]:
@@ -673,24 +670,37 @@ class QuestionGenerator:
         validation: list[QuestionValidationResult] = []
         feedback_history: dict[str, str] = {}
 
+        TARGET_MCQ = 10
+        TARGET_FRQ = 10
+
         while attempts < MAX_RETRIES:
-            n_still_needed = 20 - len(approved_questions)
+            approved_mcq = sum(1 for q in approved_questions.values() if q.question_type == "MCQ")
+            approved_frq = sum(1 for q in approved_questions.values() if q.question_type == "FRQ")
+            need_mcq = TARGET_MCQ - approved_mcq
+            need_frq = TARGET_FRQ - approved_frq
+            n_still_needed = need_mcq + need_frq
+
             if n_still_needed == 0:
                 break
 
             current_content = message_content.copy()
+
             if feedback_history:
                 feedback_str = "\n".join(f"- {qid}: {fb}" for qid, fb in feedback_history.items())
                 current_content.append({
                     "type": "text",
                     "text": (
-                        f"The following {len(feedback_history)} question(s) were rejected. "
-                        f"Generate exactly {n_still_needed} replacement question(s) with new unique IDs. "
-                        f"Fix these issues:\n{feedback_str}"
+                        f"The following question(s) were rejected or missing reviews. "
+                        f"Generate exactly {n_still_needed} replacement(s): "
+                        f"{need_mcq} MCQ and {need_frq} FRQ. "
+                        f"Use new unique IDs. Fix these issues:\n{feedback_str}"
                     ),
                 })
             else:
-                current_content.append({"type": "text", "text": "Generate exactly 20 questions (10 MCQ, 10 FRQ)."})
+                current_content.append({
+                    "type": "text",
+                    "text": f"Generate exactly 20 questions: {need_mcq} MCQ and {need_frq} FRQ.",
+                })
 
             message = await self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -705,39 +715,97 @@ class QuestionGenerator:
                 raise RuntimeError("Model failed to return a tool call despite forced tool_choice")
 
             new_questions = [Question(**q) for q in tool_use.input["questions"]]
-            new_questions = [q for q in new_questions if q.question_id not in approved_questions]
 
+            # deduplicate within batch and against already approved
             seen_ids: set[str] = set()
             deduplicated = []
             for q in new_questions:
-                if q.question_id not in seen_ids:
-                    seen_ids.add(q.question_id)
-                    deduplicated.append(q)
-                else:
+                if q.question_id in approved_questions:
+                    logger.warning(f"Question {q.question_id} already approved, skipping")
+                    continue
+                if q.question_id in seen_ids:
                     logger.warning(f"Duplicate question_id {q.question_id} in batch, skipping")
+                    continue
+                seen_ids.add(q.question_id)
+                deduplicated.append(q)
             new_questions = deduplicated
 
-            new_validation = await self.question_validator.validate_questions(new_questions, content, raw_images)
-            rejected_ids = {r.question_id for r in new_validation if not r.approved}
-            for q in new_questions:
-                if q.question_id not in rejected_ids:
-                    approved_questions[q.question_id] = q
+            # validate the new batch
+            new_validation = await self.question_validator.validate_questions(
+                new_questions, content, raw_images
+            )
 
+            # build a lookup of reviews — only explicitly approved reviews count
+            reviewed_ids = {r.question_id for r in new_validation}
+            approval_map = {r.question_id: r.approved for r in new_validation}
+
+            this_round_feedback: dict[str, str] = {}
+
+            # recalculate slots at point of approval to handle mixed batches
+            current_mcq = sum(1 for q in approved_questions.values() if q.question_type == "MCQ")
+            current_frq = sum(1 for q in approved_questions.values() if q.question_type == "FRQ")
+
+            for q in new_questions:
+                if q.question_id not in reviewed_ids:
+                    # validator omitted this question — treat as rejected
+                    this_round_feedback[q.question_id] = "No review returned by validator — regenerate with a new ID"
+                    new_validation.append(QuestionValidationResult(
+                        question_id=q.question_id,
+                        approved=False,
+                        feedback="No review returned by validator",
+                    ))
+                    continue
+
+                if not approval_map[q.question_id]:
+                    # explicitly rejected
+                    review = next(r for r in new_validation if r.question_id == q.question_id)
+                    this_round_feedback[q.question_id] = review.feedback
+                    continue
+
+                # check type slot before approving
+                if q.question_type == "MCQ" and current_mcq >= TARGET_MCQ:
+                    this_round_feedback[q.question_id] = f"MCQ slot full ({TARGET_MCQ} already approved) — regenerate as FRQ"
+                    new_validation.append(QuestionValidationResult(
+                        question_id=q.question_id,
+                        approved=False,
+                        feedback="MCQ slot full",
+                    ))
+                    continue
+
+                if q.question_type == "FRQ" and current_frq >= TARGET_FRQ:
+                    this_round_feedback[q.question_id] = f"FRQ slot full ({TARGET_FRQ} already approved) — regenerate as MCQ"
+                    new_validation.append(QuestionValidationResult(
+                        question_id=q.question_id,
+                        approved=False,
+                        feedback="FRQ slot full",
+                    ))
+                    continue
+
+                # approved and fits the type slot
+                approved_questions[q.question_id] = q
+                if q.question_type == "MCQ":
+                    current_mcq += 1
+                else:
+                    current_frq += 1
+
+            # merge validation records — later rounds overwrite earlier ones for same ID
             existing = {r.question_id: r for r in validation}
             for r in new_validation:
                 existing[r.question_id] = r
             validation = list(existing.values())
 
-            feedback_history = {r.question_id: r.feedback for r in new_validation if not r.approved}
+            feedback_history = this_round_feedback
             attempts += 1
 
-        all_approved = len(approved_questions) == 20
+        approved_mcq = sum(1 for q in approved_questions.values() if q.question_type == "MCQ")
+        approved_frq = sum(1 for q in approved_questions.values() if q.question_type == "FRQ")
+        all_approved = approved_mcq == TARGET_MCQ and approved_frq == TARGET_FRQ
+
         return GenerationResult(
             status=GenerationStatus.GENERATED if all_approved else GenerationStatus.FAILED_VALIDATION,
             questions=list(approved_questions.values()),
             validation=validation,
         )
-
 
 # ---------------------------------------------------------------------------
 # Answer validation + chat
@@ -836,18 +904,21 @@ Answer conversationally. If they're asking for a hint, guide them without giving
 class DifficultyController:
     def __init__(self):
         self.K_BASE = 32.0
-        self.MAX_ADAPTATION_INFLUENCE = 50.0
 
     def clamp(self, value, min_val, max_val):
         return max(min_val, min(max_val, value))
 
     def compute_evidence(self, tr: TopicResult, stats: TopicStats, question_difficulty: int) -> TopicEvidence:
-        adaptation_contribution = tr.adaptation_signal * self.MAX_ADAPTATION_INFLUENCE * tr.confidence
         actual_score = tr.score
         expected_score = 1 / (1 + 10 ** ((question_difficulty - stats.elo) / 400))
         p_obs = tr.confidence * tr.score + (1 - tr.confidence) * 0.5
-        K = self.K_BASE * tr.confidence * (0.5 + 0.5 * stats.p_known)
-        elo_delta = K * (actual_score - expected_score) + adaptation_contribution
+
+        adaptation_scale = 1.0 + tr.adaptation_signal
+        adaptation_scale = max(0.25, min(2.0, adaptation_scale))
+
+        K = self.K_BASE * tr.confidence * (0.5 + 0.5 * stats.p_known) * adaptation_scale
+        elo_delta = K * (actual_score - expected_score)
+
         return TopicEvidence(
             topic=tr.topic,
             expected_score=expected_score,
@@ -862,13 +933,19 @@ class DifficultyController:
         return int(round(self.clamp(stats.elo + evidence.elo_delta, 300, 3000)))
 
     def compute_bkt_update(self, stats: TopicStats, evidence: TopicEvidence) -> float:
-        P_SLIP, P_GUESS, P_LEARN = 0.1, 0.1, 0.1
+        P_SLIP, P_GUESS, P_LEARN, P_FORGET = 0.1, 0.1, 0.1, 0.05
         p_known = stats.p_known
+
         p_correct = p_known * (1 - P_SLIP) + (1 - p_known) * P_GUESS
         p_if_correct = (p_known * (1 - P_SLIP)) / p_correct
-        p_if_incorrect = (p_known * P_SLIP) / (p_known * P_SLIP + (1 - p_known) * (1 - P_GUESS))
-        p_known_updated = evidence.p_obs * p_if_correct + (1 - evidence.p_obs) * p_if_incorrect
-        return p_known_updated + (1 - p_known_updated) * P_LEARN
+
+        p_incorrect_denom = (p_known * P_SLIP) + (1 - p_known) * (1 - P_GUESS)
+        p_if_incorrect = (p_known * P_SLIP) / p_incorrect_denom if p_incorrect_denom > 0 else 0.0
+
+        p_posterior = (evidence.p_obs * p_if_correct) + ((1 - evidence.p_obs) * p_if_incorrect)
+
+        p_known_updated = (p_posterior * (1 - P_FORGET)) + ((1 - p_posterior) * P_LEARN)
+        return self.clamp(p_known_updated, 0.05, 0.95)
 
     def compute_topic_update(self, stats: TopicStats, evidence: TopicEvidence) -> TopicUpdate:
         return TopicUpdate(
@@ -911,7 +988,7 @@ class SessionStore:
                 self.db.table("sessions").select("*").eq("session_id", session_id).single().execute(),
                 self.db.table("questions").select("*").eq("session_id", session_id).order("position").execute(),
                 self.db.table("chat_messages").select("role, content").eq("session_id", session_id).order("created_at", desc=True).limit(10).execute(),
-                self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("answered_at", desc=True).limit(10).execute(),
+                self.db.table("answer_attempts").select("*").eq("session_id", session_id).order("answered_at", desc=True).limit(20).execute(),
                 self.db.table("topic_stats").select("*").eq("session_id", session_id).execute(),
             )
         except Exception as e:
@@ -942,7 +1019,7 @@ class SessionStore:
             history=[QuestionResult(**h) for h in history_res.data],
         )
 
-    async def verify_ownership(self, session_id: UUID, user_id: str) -> None:
+    async def verify_ownership(self, session_id: UUID, user_id: UUID) -> None:
         """Raises 404 if not found, 403 if owned by someone else."""
         res = await (
             self.db.table("sessions")
@@ -956,7 +1033,7 @@ class SessionStore:
         if res.data["user_id"] != user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-    async def create(self, session_id: UUID, label: str, user_id: str) -> SessionState:
+    async def create(self, session_id: UUID, label: str, user_id: UUID) -> SessionState:
         await self.db.table("sessions").insert({
             "session_id": session_id,
             "label": label,
@@ -964,7 +1041,7 @@ class SessionStore:
         }).execute()
         return SessionState(session_id=session_id, label=label)
 
-    async def get_or_create(self, session_id: UUID, label: str, user_id: str) -> SessionState:
+    async def get_or_create(self, session_id: UUID, label: str, user_id: UUID) -> SessionState:
         try:
             return await self.get(session_id)
         except SessionNotFoundError:
@@ -986,13 +1063,39 @@ class SessionStore:
             )
         await asyncio.gather(*updates)
 
+    async def get_topic_stats_at_question(
+        self, session_id: UUID, question_id: str, topics: list[str]
+    ) -> dict[str, TopicStats]:
+        res = await (
+            self.db.table("elo_history")
+            .select("topic, new_elo, new_p_known")
+            .eq("session_id", session_id)
+            .eq("question_id", question_id)
+            .execute()
+        )
+        return {
+            row["topic"]: TopicStats(
+                topic=row["topic"],
+                elo=row["new_elo"],
+                p_known=row["new_p_known"],
+                attempts=0,  # attempts not critical for display
+            )
+            for row in res.data
+            if row["topic"] in topics
+        }
+
     async def replace_questions(self, session_id: UUID, questions: list[Question]) -> None:
         await self.db.table("questions").delete().eq("session_id", session_id).execute()
         if questions:
-            await self.db.table("questions").insert([
-                {**q.model_dump(), "session_id": session_id, "position": i}
-                for i, q in enumerate(questions)
-            ]).execute()
+            await asyncio.gather(
+                self.db.table("questions").insert([
+                    {**q.model_dump(), "session_id": session_id, "position": i}
+                    for i, q in enumerate(questions)
+                ]).execute(),
+                self.db.table("sessions").update({
+                    "questions_count": len(questions),
+                }).eq("session_id", session_id).execute(),
+            )
 
     async def append_answer(self, session_id: UUID, response: str, result: QuestionResult) -> None:
         await self.db.table("answer_attempts").insert({
@@ -1081,6 +1184,17 @@ class SessionStore:
             for update in updates
         ]).execute()
 
+    async def get_topic_updates_for_question(self, session_id: UUID, question_id: str) -> list[TopicUpdate]:
+        res = await (
+            self.db.table("elo_history")
+            .select("*")
+            .eq("session_id", session_id)
+            .eq("question_id", question_id)
+            .execute()
+        )
+
+        return [TopicUpdate(**row) for row in res.data]
+
     async def get_relevant_profile(self, session_id: UUID, state: SessionState) -> dict | None:
         if not state.topic_stats:
             return None
@@ -1168,6 +1282,7 @@ async def upload(
     storage_manager: StorageManager = Depends(get_storage_manager),
     session_store: SessionStore = Depends(get_session_store),
 ):
+    await session_store.verify_ownership(session_id, user["sub"])
     pdf_bytes = await file.read()
     pdf_name = file.filename
 
@@ -1222,12 +1337,12 @@ async def generate(
     session_store: SessionStore = Depends(get_session_store),
     storage_manager: StorageManager = Depends(get_storage_manager),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
-
     try:
         state = await session_store.get_or_create(session_id, label=req.label, user_id=user["sub"])
     except DatabaseError:
         raise HTTPException(status_code=503, detail="Database unavailable, please retry")
+    
+    await session_store.verify_ownership(session_id, user["sub"])
 
     profile = await session_store.get_relevant_profile(session_id, state)
     raw_images = await storage_manager.list_images(session_id)
@@ -1239,18 +1354,10 @@ async def generate(
 
     result = await question_generator.generate_questions(content, raw_images, storage_manager, session_id, profile)
 
-    if result.status != GenerationStatus.GENERATED:
+    if not result.questions:
         raise HTTPException(
             status_code=422,
-            detail={
-                "error": "generation_failed",
-                "message": "Question generation failed validation after max retries",
-                "approved_count": len(result.questions),
-                "validation": [
-                    {"question_id": v.question_id, "approved": v.approved, "feedback": v.feedback}
-                    for v in result.validation if not v.approved
-                ],
-            },
+            detail="No questions could be generated from this content — try uploading different material."
         )
 
     async with _session_locks[session_id]:
@@ -1263,13 +1370,16 @@ async def generate(
 
         state.questions = result.questions
         state.current_question_index = 0
-        await asyncio.gather(
-            session_store.replace_questions(session_id, result.questions),
-            session_store.append_generation_input(
-                generation_input_id=upload_context["generation_input_id"],
-                questions=result.questions,
-            ),
-        )
+        db_ops = [session_store.replace_questions(session_id, result.questions)]
+        if upload_context is not None:
+            db_ops.append(
+                session_store.append_generation_input(
+                    generation_input_id=upload_context["generation_input_id"],
+                    questions=result.questions,
+                )
+            )
+
+        await asyncio.gather(*db_ops)
         await session_store.save(session_id, state)
 
     return result
@@ -1282,7 +1392,7 @@ async def list_sessions(
 ):
     res = await (
         supabase.table("sessions")
-        .select("session_id, label")
+        .select("session_id, label, current_question_index, created_at, questions_count")
         .eq("user_id", user["sub"])
         .order("last_active_at", desc=True)
         .execute()
@@ -1340,6 +1450,32 @@ async def submit_answer(
         question = next((q for q in state.questions if q.question_id == req.question_id), None)
         if question is None:
             raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
+        
+        for qr in state.history:
+            if qr.question_id == req.question_id:
+                past_updates = await session_store.get_topic_updates_for_question(
+                    session_id, req.question_id
+                )
+
+                past_stats = await session_store.get_topic_stats_at_question(
+                    session_id, req.question_id, question.topics
+                )
+
+                return AnswerResponse(
+                    feedback=qr.feedback,
+                    score=qr.score,
+                    topic_stats=past_stats,
+                    topic_updates= past_updates,
+                    misconception=qr.misconception
+                )
+        
+        if state.questions[state.current_question_index].question_id != req.question_id:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Question {req.question_id} is not the current question."
+                ),
+            )
 
         try:
             result = await answer_validator.validate_answers(

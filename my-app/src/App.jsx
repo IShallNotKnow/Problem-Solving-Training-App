@@ -1,15 +1,15 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ThemeProvider } from './context/ThemeContext';
-import { AuthProvider } from './context/AuthContext';
-import { ToastProvider } from './context/ToastContext';
-import ProtectedRoute from './components/ProtectedRoute';
-import HomePage from './pages/HomePage';
-import LoginPage from './pages/LoginPage';
-import SignupPage from './pages/SignupPage';
-import Dashboard from './pages/Dashboard';
-import StudyPage from './pages/StudyPage';
+import { ThemeProvider } from './context/ThemeContext.jsx';
+import { AuthProvider } from './context/AuthContext.jsx';
+import { ToastProvider } from './context/ToastContext.jsx';
+import ProtectedRoute from './components/ProtectedRoute.jsx';
+import HomePage from './pages/HomePage.jsx';
+import LoginPage from './pages/LoginPage.jsx';
+import SignupPage from './pages/SignupPage.jsx';
+import Dashboard from './pages/Dashboard.jsx';
+import StudyPage from './pages/StudyPage.jsx';
 import { ConfigProvider, theme as antTheme } from 'antd';
-import { useTheme } from './context/ThemeContext';
+import { useTheme } from './context/ThemeContext.jsx';
 
 function ThemedApp() {
     const { theme: appTheme } = useTheme();

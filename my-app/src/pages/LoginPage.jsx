@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext.jsx';
+import { useTheme } from '../context/ThemeContext.jsx';
 import './LoginPage.css';
-import { supabase } from "../utils/supabase";
+import { supabase } from "../utils/supabase.js";
 
 function LoginPage() {
     const { theme, toggleTheme } = useTheme();

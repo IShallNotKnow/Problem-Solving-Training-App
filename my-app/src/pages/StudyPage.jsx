@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useTheme } from '../context/ThemeContext';
-import { useToast } from '../context/ToastContext';
-import { apiFetch, apiUpload } from '../utils/api';
+import { useTheme } from '../context/ThemeContext.jsx';
+import { useToast } from '../context/ToastContext.jsx';
+import { apiFetch, apiUpload } from '../utils/api.js';
 import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
 import { IoSend } from 'react-icons/io5';
 import { Switch } from 'antd';

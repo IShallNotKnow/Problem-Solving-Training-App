@@ -2,8 +2,9 @@ import os
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
+from config import settings
 
-SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET")
+SUPABASE_JWT_SECRET = settings.supabase_jwt_secret
 
 security = HTTPBearer()
 

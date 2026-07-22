@@ -29,6 +29,7 @@ from models import (
     Question, QuestionResult, QuestionValidationResult, GenerationResult, GenerationStatus, GenerateRequest,
     SessionState, SessionContext, SessionSummary, AnswerResponse, AnswerRequest, AnswerValidationResult,
     TopicStats, TopicResult, TopicEvidence, TopicUpdate, UploadResponse, ChatRequest, ChatResponse,
+    QuestionDTO, GenerationResultDTO, SessionStateDTO,
     IMAGE_FILTERING_TOOL, ANSWER_VALIDATION_TOOL, QUESTION_VALIDATION_TOOL, QUESTION_GENERATION_TOOL
 )
 
@@ -1422,7 +1423,7 @@ async def upload(
     return UploadResponse(session_id=session_id, content=content, raw_markdown=markdown, pdf_path=pdf_path)
 
 
-@app.post("/sessions/{session_id}/reset", response_model=SessionState)
+@app.post("/sessions/{session_id}/reset", response_model=SessionStateDTO)
 async def reset_session(
     session_id: UUID,
     user=Depends(get_current_user),
@@ -1438,10 +1439,22 @@ async def reset_session(
             raise HTTPException(status_code=503, detail="Database unavailable, please retry")
         state.current_question_index = 0
         await session_store.save(session_id, state)
-        return state
+        
+    return SessionStateDTO(
+        session_id=state.session_id,
+        label=state.label,
+        current_question_index=state.current_question_index,
+        topic_stats=state.topic_stats,
+        questions=[
+            QuestionDTO.model_validate(q, from_attributes=True)
+            for q in state.questions
+        ],
+        history=state.history,
+        chat_history=state.chat_history,
+    )
 
 
-@app.post("/sessions/{session_id}/generate", response_model=GenerationResult)
+@app.post("/sessions/{session_id}/generate", response_model=GenerationResultDTO)
 @limiter.limit("2/minute")
 async def generate(
     session_id: UUID,
@@ -1496,8 +1509,15 @@ async def generate(
         await asyncio.gather(*db_ops)
         await session_store.save(session_id, state)
 
-    return result
-
+    return GenerationResultDTO(
+        status=result.status,
+        questions=[
+            QuestionDTO.model_validate(q, from_attributes=True)
+            for q in result.questions
+        ],
+        validation=result.validation,
+        message=result.message,
+    )
 
 @app.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions(
@@ -1514,19 +1534,33 @@ async def list_sessions(
     return res.data
 
 
-@app.get("/sessions/{session_id}", response_model=SessionState)
+@app.get("/sessions/{session_id}", response_model=SessionStateDTO)
 async def get_session(
     session_id: UUID,
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
     await session_store.verify_ownership(session_id, user["sub"])
+
     try:
-        return await session_store.get(session_id)
+        state = await session_store.get(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     except DatabaseError:
         raise HTTPException(status_code=503, detail="Database unavailable, please retry")
+
+    return SessionStateDTO(
+        session_id=state.session_id,
+        label=state.label,
+        current_question_index=state.current_question_index,
+        topic_stats=state.topic_stats,
+        questions=[
+            QuestionDTO.model_validate(q, from_attributes=True)
+            for q in state.questions
+        ],
+        history=state.history,
+        chat_history=state.chat_history,
+    )
 
 
 @app.delete("/sessions/{session_id}", status_code=204)

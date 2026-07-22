@@ -218,6 +218,31 @@ class SessionSummary(BaseModel):
     last_active_at: datetime | None
     created_at: datetime
 
+
+class QuestionDTO(BaseModel):
+    question_id: str
+    question_type: Literal["MCQ", "FRQ"]
+    prompt: str
+    choices: list[str] | None = None
+    topic_difficulties: dict[str, int]
+
+
+class GenerationResultDTO(BaseModel):
+    status: GenerationStatus
+    questions: list[QuestionDTO]
+    validation: list[QuestionValidationResult]
+    message: str = ""
+
+
+class SessionStateDTO(BaseModel):
+    session_id: UUID
+    label: str
+    current_question_index: int = 0
+    topic_stats: dict[str, TopicStats]
+    questions: list[QuestionDTO]
+    history: list[QuestionResult]
+    chat_history: list[dict]
+
 # ---------------------------------------------------------------------------
 # Tool schemas
 # ---------------------------------------------------------------------------

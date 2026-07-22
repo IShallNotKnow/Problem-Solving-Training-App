@@ -176,7 +176,8 @@ class GenerateRequest(BaseModel):
 
 class AnswerRequest(BaseModel):
     question_id: str
-    response: str
+    response: str | None = None
+    choice_index: int | None = None
 
 
 class ChatRequest(BaseModel):

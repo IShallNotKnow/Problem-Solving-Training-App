@@ -1,698 +1,1157 @@
-/* tokens are defined in Dashboard.css via :root / [data-theme='light'] */
+/* ==========================================================
+   StudyPage.css
+   Theme aliases (base tokens come from Dashboard.css)
+========================================================== */
 
-/* ─── layout ─────────────────────────────────────────────── */
+:root {
+    --sp-shadow-sm: 0 1px 2px rgba(0,0,0,.05);
+    --sp-shadow: 0 10px 30px rgba(0,0,0,.08);
+    --sp-shadow-lg: 0 18px 50px rgba(0,0,0,.14);
+
+    --sp-radius: 16px;
+    --sp-radius-sm: 10px;
+
+    --sp-user-gradient: linear-gradient(135deg,var(--accent),#4f8cff);
+    --sp-transition: .18s ease;
+}
+
+[data-theme="dark"] {
+    --sp-shadow-sm: 0 2px 4px rgba(0,0,0,.35);
+    --sp-shadow: 0 12px 34px rgba(0,0,0,.45);
+    --sp-shadow-lg: 0 20px 60px rgba(0,0,0,.6);
+    --sp-user-gradient: linear-gradient(135deg,#3b82f6,#2563eb);
+}
+
+/* ==========================================================
+   Layout
+========================================================== */
+
 .sp-wrap {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Inter', system-ui, sans-serif;
-    overflow: hidden;
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+    overflow:hidden;
+    background:var(--bg);
+    color:var(--text);
+    font-family:Inter,system-ui,sans-serif;
 }
 
-.sp-loading-screen {
-    align-items: center;
-    justify-content: center;
+.sp-loading-screen,
+.sp-error-screen {
+    display:flex;
+    align-items:center;
+    justify-content:center;
 }
 
-/* ─── header ─────────────────────────────────────────────── */
+/* ==========================================================
+   Header
+========================================================== */
+
 .sp-header {
-    height: 52px;
-    display: flex;
-    align-items: center;
-    padding: 0 20px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    flex-shrink: 0;
-    gap: 12px;
+    display:flex;
+    align-items:center;
+    gap:14px;
+    height:58px;
+    padding:0 22px;
+    flex-shrink:0;
+    background:var(--bg);
+    border-bottom:1px solid var(--border);
 }
 
 .sp-back-btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-muted);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-    padding: 6px 8px;
-    border-radius: 6px;
-    transition: color var(--transition), background var(--transition);
-    white-space: nowrap;
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:8px 10px;
+    border:none;
+    border-radius:var(--sp-radius-sm);
+    background:transparent;
+    color:var(--text-muted);
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    transition:all var(--sp-transition);
 }
 
 .sp-back-btn:hover {
-    color: var(--text);
-    background: var(--surface-2);
+    background:var(--surface);
+    color:var(--text);
+}
+
+.sp-back-btn:active {
+    transform:scale(.97);
 }
 
 .sp-session-title {
-    flex: 1;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    text-align: center;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex:1;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+    text-align:center;
+    font-size:14px;
+    font-weight:700;
+    color:var(--text);
 }
 
 .sp-theme-btn {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: color var(--transition), border-color var(--transition);
+    width:36px;
+    height:36px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:transparent;
+    color:var(--text-muted);
+    cursor:pointer;
+    transition:all var(--sp-transition);
 }
 
 .sp-theme-btn:hover {
-    color: var(--text);
-    border-color: var(--text-faint);
+    color:var(--text);
+    border-color:var(--accent);
+    background:var(--surface);
 }
 
-/* ─── progress bar ───────────────────────────────────────── */
+/* ==========================================================
+   Progress
+========================================================== */
+
 .sp-progress-wrap {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 20px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    flex-shrink: 0;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:10px 22px;
+    background:var(--bg);
+    border-bottom:1px solid var(--border);
+    flex-shrink:0;
 }
 
 .sp-progress-track {
-    flex: 1;
-    height: 3px;
-    background: var(--border);
-    border-radius: 99px;
-    overflow: hidden;
+    flex:1;
+    height:5px;
+    overflow:hidden;
+    border-radius:999px;
+    background:var(--surface-2);
 }
 
 .sp-progress-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 99px;
-    transition: width 0.4s ease;
+    height:100%;
+    border-radius:inherit;
+    background:var(--accent);
+    transition:width .35s ease;
 }
 
 .sp-progress-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    min-width: 40px;
-    text-align: right;
+    min-width:44px;
+    text-align:right;
+    font-size:11px;
+    font-weight:600;
+    color:var(--text-muted);
 }
 
-/* ─── main / messages ────────────────────────────────────── */
+/* ==========================================================
+   Main
+========================================================== */
+
 .sp-main {
-    flex: 1;
-    overflow-y: auto;
-    padding: 24px 0 8px;
+    flex:1;
+    overflow-y:auto;
+    padding:28px 0 12px;
+    scroll-behavior:smooth;
+}
+
+.sp-main::-webkit-scrollbar {
+    width:10px;
+}
+
+.sp-main::-webkit-scrollbar-thumb {
+    background:var(--border);
+    border-radius:999px;
+}
+
+.sp-main::-webkit-scrollbar-thumb:hover {
+    background:var(--text-faint);
 }
 
 .sp-messages {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 0 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
+    width:100%;
+    max-width:760px;
+    margin:0 auto;
+    padding:0 22px;
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+    box-sizing:border-box;
 }
 
-/* ─── empty state ────────────────────────────────────────── */
+/* ==========================================================
+   Empty State
+========================================================== */
+
 .sp-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: 80px 24px 40px;
-    gap: 8px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    text-align:center;
+    padding:90px 24px 70px;
 }
 
 .sp-empty-icon {
-    font-size: 28px;
-    margin-bottom: 8px;
-    opacity: 0.5;
+    width:72px;
+    height:72px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    margin-bottom:18px;
+    border-radius:20px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    color:var(--accent);
+    font-size:30px;
+    box-shadow:var(--sp-shadow-sm);
 }
 
 .sp-empty-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text);
+    margin-bottom:10px;
+    font-size:18px;
+    font-weight:700;
+    color:var(--text);
 }
 
 .sp-empty-sub {
-    font-size: 13px;
-    color: var(--text-muted);
-    max-width: 300px;
-    line-height: 1.5;
+    max-width:420px;
+    font-size:14px;
+    line-height:1.65;
+    color:var(--text-muted);
 }
 
-/* ─── messages ───────────────────────────────────────────── */
-.sp-message {
-    display: flex;
-}
+/* ==========================================================
+   Loading
+========================================================== */
 
-.sp-message--user {
-    justify-content: flex-end;
-}
-
-.sp-message--assistant {
-    justify-content: flex-start;
-}
-
-.sp-message-bubble {
-    max-width: 80%;
-    padding: 12px 16px;
-    border-radius: 16px;
-    font-size: 14px;
-    line-height: 1.55;
-}
-
-.sp-message--user .sp-message-bubble {
-    background: var(--accent);
-    color: #fff;
-    border-bottom-right-radius: 4px;
-}
-
-.sp-message--assistant .sp-message-bubble {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-bottom-left-radius: 4px;
-}
-
-.sp-message-bubble--error {
-    background: var(--danger-dim) !important;
-    border-color: var(--danger) !important;
-    color: var(--danger) !important;
-}
-
-/* ─── file tag ───────────────────────────────────────────── */
-.sp-file-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 11px;
-    background: rgba(255,255,255,0.15);
-    border-radius: 6px;
-    padding: 3px 8px;
-    margin-bottom: 6px;
-}
-
-/* ─── questions summary (after generation) ───────────────── */
-.sp-questions {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.sp-questions-label {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    margin: 0;
-}
-
-.sp-questions-preview {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-
-.sp-question-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 10px;
-    border-radius: 20px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    font-size: 11px;
-    color: var(--text-muted);
-}
-
-.sp-question-chip-num {
-    font-weight: 600;
-    color: var(--text);
-}
-
-.sp-question-chip-type {
-    color: var(--accent);
-    font-weight: 500;
-}
-
-.sp-question-chip--more {
-    color: var(--text-faint);
-}
-
-/* ─── answer feedback ────────────────────────────────────── */
-.sp-feedback {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.sp-score-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    width: fit-content;
-}
-
-.sp-score-badge--correct {
-    background: #16a34a20;
-    color: #4ade80;
-    border: 1px solid #16a34a40;
-}
-
-.sp-score-badge--partial {
-    background: #d9770620;
-    color: #fb923c;
-    border: 1px solid #d9770640;
-}
-
-.sp-score-badge--incorrect {
-    background: var(--danger-dim);
-    color: var(--danger);
-    border: 1px solid #e0525240;
-}
-
-.sp-score-pct {
-    opacity: 0.7;
-    font-weight: 400;
-}
-
-.sp-feedback-text {
-    font-size: 14px;
-    color: var(--text);
-    margin: 0;
-    line-height: 1.55;
-}
-
-.sp-misconception {
-    font-size: 12px;
-    color: var(--text-muted);
-    margin: 0;
-    padding: 6px 10px;
-    background: var(--surface-2);
-    border-radius: 6px;
-    border-left: 2px solid var(--accent);
-}
-
-/* ─── current question card ──────────────────────────────── */
-.sp-question-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.sp-question-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.sp-question-num {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted);
-}
-
-.sp-question-type-badge {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--accent);
-    background: var(--accent-dim);
-    padding: 3px 10px;
-    border-radius: 20px;
-}
-
-.sp-question-prompt {
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--text);
-    margin: 0;
-    line-height: 1.55;
-}
-
-.sp-choices {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.sp-choice {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    font-size: 14px;
-    color: var(--text);
-    padding: 10px 14px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-}
-
-.sp-choice-letter {
-    font-weight: 700;
-    color: var(--accent);
-    font-size: 12px;
-    flex-shrink: 0;
-    margin-top: 1px;
-}
-
-/* ─── loading dots ───────────────────────────────────────── */
 .sp-loading {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-    padding: 2px 0;
+    display:flex;
+    align-items:center;
+    gap:5px;
 }
 
 .sp-loading span {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    animation: sp-bounce 1.2s ease-in-out infinite;
+    width:6px;
+    height:6px;
+    border-radius:50%;
+    background:var(--text-muted);
+    animation:spBounce 1.1s infinite ease-in-out;
 }
 
-.sp-loading span:nth-child(2) { animation-delay: 0.2s; }
-.sp-loading span:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes sp-bounce {
-    0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
-    40%            { transform: scale(1);   opacity: 1;   }
+.sp-loading span:nth-child(2) {
+    animation-delay:.18s;
 }
 
-/* ─── input area ─────────────────────────────────────────── */
+.sp-loading span:nth-child(3) {
+    animation-delay:.36s;
+}
+
+@keyframes spBounce {
+    0%,80%,100% {
+        opacity:.35;
+        transform:scale(.7);
+    }
+
+    40% {
+        opacity:1;
+        transform:scale(1);
+    }
+}
+
+/* ==========================================================
+   Messages
+========================================================== */
+
+.sp-message {
+    display:flex;
+    animation:spMessageIn .18s ease-out;
+}
+
+.sp-message--user {
+    justify-content:flex-end;
+}
+
+.sp-message--assistant {
+    justify-content:flex-start;
+}
+
+@keyframes spMessageIn {
+    from {
+        opacity:0;
+        transform:translateY(6px);
+    }
+    to {
+        opacity:1;
+        transform:translateY(0);
+    }
+}
+
+.sp-message-bubble {
+    max-width:82%;
+    padding:13px 16px;
+    border-radius:16px;
+    font-size:14px;
+    line-height:1.55;
+    box-shadow:var(--sp-shadow-sm);
+}
+
+.sp-message--user .sp-message-bubble {
+    background:var(--sp-user-gradient);
+    color:#fff;
+    border-bottom-right-radius:5px;
+}
+
+.sp-message--assistant .sp-message-bubble {
+    background:var(--surface);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-bottom-left-radius:5px;
+}
+
+.sp-message-bubble--error {
+    background:var(--danger-dim)!important;
+    border-color:var(--danger)!important;
+    color:var(--danger)!important;
+}
+
+/* ==========================================================
+   File Tag
+========================================================== */
+
+.sp-file-tag {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    margin-bottom:8px;
+    padding:4px 9px;
+    border-radius:8px;
+    font-size:11px;
+    background:rgba(255,255,255,.14);
+}
+
+/* ==========================================================
+   Generated Questions Summary
+========================================================== */
+
+.sp-questions {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+}
+
+.sp-questions-label {
+    margin:0;
+    font-size:13px;
+    font-weight:650;
+    color:var(--text);
+}
+
+.sp-questions-preview {
+    display:flex;
+    flex-wrap:wrap;
+    gap:7px;
+}
+
+.sp-question-chip {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:4px 10px;
+    border-radius:999px;
+    background:var(--surface-2);
+    border:1px solid var(--border);
+    color:var(--text-muted);
+    font-size:11px;
+}
+
+.sp-question-chip-num {
+    font-weight:700;
+    color:var(--text);
+}
+
+.sp-question-chip-type {
+    color:var(--accent);
+    font-weight:600;
+}
+
+.sp-question-chip--more {
+    color:var(--text-faint);
+}
+
+/* ==========================================================
+   Answer Feedback
+========================================================== */
+
+.sp-feedback {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+}
+
+.sp-score-badge {
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    width:max-content;
+    padding:5px 12px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:700;
+}
+
+.sp-score-badge--correct {
+    background:#16a34a20;
+    border:1px solid #16a34a40;
+    color:#4ade80;
+}
+
+.sp-score-badge--partial {
+    background:#d9770620;
+    border:1px solid #d9770640;
+    color:#fb923c;
+}
+
+.sp-score-badge--incorrect {
+    background:var(--danger-dim);
+    border:1px solid color-mix(in srgb,var(--danger) 35%,transparent);
+    color:var(--danger);
+}
+
+.sp-score-pct {
+    opacity:.7;
+    font-weight:500;
+}
+
+.sp-feedback-text {
+    margin:0;
+    font-size:14px;
+    line-height:1.6;
+    color:var(--text);
+}
+
+.sp-misconception {
+    margin:0;
+    padding:8px 10px;
+    border-radius:8px;
+    border-left:3px solid var(--accent);
+    background:var(--surface-2);
+    color:var(--text-muted);
+    font-size:12px;
+}
+
+/* ==========================================================
+   Current Question Card
+========================================================== */
+
+.sp-question-card {
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    margin-top:6px;
+    padding:20px;
+    border-radius:var(--sp-radius);
+    background:var(--surface);
+    border:1px solid var(--border);
+    box-shadow:var(--sp-shadow-sm);
+}
+
+.sp-question-card-header {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+}
+
+.sp-question-num {
+    font-size:12px;
+    font-weight:650;
+    color:var(--text-muted);
+}
+
+.sp-question-type-badge {
+    padding:4px 10px;
+    border-radius:999px;
+    background:var(--accent-dim);
+    color:var(--accent);
+    font-size:11px;
+    font-weight:700;
+}
+
+.sp-question-prompt {
+    margin:0;
+    font-size:15px;
+    font-weight:550;
+    line-height:1.6;
+    color:var(--text);
+}
+
+/* ==========================================================
+   MCQ Choices
+========================================================== */
+
+.sp-choices {
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+    margin:0;
+    padding:0;
+    list-style:none;
+}
+
+.sp-choice {
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
+    width:100%;
+    padding:12px 14px;
+    border-radius:var(--sp-radius-sm);
+    border:1px solid var(--border);
+    background:var(--surface-2);
+    color:var(--text);
+    font:inherit;
+    font-size:14px;
+    text-align:left;
+    cursor:pointer;
+    transition:all var(--sp-transition);
+}
+
+.sp-choice:hover:not(:disabled) {
+    background:var(--surface);
+    border-color:var(--accent);
+    transform:translateY(-1px);
+}
+
+.sp-choice:active:not(:disabled) {
+    transform:scale(.99);
+}
+
+.sp-choice:disabled {
+    opacity:.55;
+    cursor:not-allowed;
+}
+
+.sp-choice-letter {
+    flex-shrink:0;
+    margin-top:1px;
+    font-size:12px;
+    font-weight:800;
+    color:var(--accent);
+}
+
+/* ==========================================================
+   Input Area
+========================================================== */
+
 .sp-input-wrap {
-    border-top: 1px solid var(--border);
-    background: var(--bg);
-    padding: 12px 20px 16px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-width: 720px;
-    width: 100%;
-    margin: 0 auto;
-    box-sizing: border-box;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    width:100%;
+    max-width:760px;
+    margin:0 auto;
+    padding:12px 22px 16px;
+    box-sizing:border-box;
+    flex-shrink:0;
+    background:var(--bg);
+    border-top:1px solid var(--border);
 }
 
 .sp-toggle-row {
-    display: flex;
-    justify-content: flex-end;
+    display:flex;
+    justify-content:flex-end;
 }
 
-/* ant design switch override */
+/* Ant Design Switch */
+
 .sp-toggle-row .ant-switch {
-    background: var(--surface-2);
-    border: 1px solid var(--border);
+    background:var(--surface-2);
+    border:1px solid var(--border);
+}
+
+.sp-toggle-row .ant-switch:hover {
+    background:var(--surface);
 }
 
 .sp-toggle-row .ant-switch-checked {
-    background: var(--accent) !important;
-    border-color: var(--accent) !important;
+    background:var(--accent)!important;
+    border-color:var(--accent)!important;
 }
 
+/* ==========================================================
+   Input Box
+========================================================== */
+
 .sp-input-box {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-    transition: border-color var(--transition);
+    overflow:hidden;
+    border-radius:var(--sp-radius);
+    background:var(--surface);
+    border:1px solid var(--border);
+    transition:border-color var(--sp-transition),box-shadow var(--sp-transition);
 }
 
 .sp-input-box:focus-within {
-    border-color: var(--accent);
+    border-color:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-dim);
 }
 
+.sp-input-box:has(.sp-textarea--error) {
+    border-color:var(--danger);
+    box-shadow:0 0 0 3px var(--danger-dim);
+}
+
+/* ==========================================================
+   File Preview
+========================================================== */
+
 .sp-file-preview {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px 0;
-    font-size: 12px;
-    color: var(--text-muted);
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:10px 14px 0;
+    color:var(--text-muted);
+    font-size:12px;
+}
+
+.sp-file-preview span {
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
 }
 
 .sp-file-preview button {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: var(--text-muted);
-    padding: 0;
-    font-size: 12px;
-    line-height: 1;
-    transition: color var(--transition);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    margin-left:auto;
+    padding:2px;
+
+    border:none;
+    background:transparent;
+
+    color:var(--text-muted);
+    cursor:pointer;
+
+    transition:color var(--sp-transition);
 }
 
 .sp-file-preview button:hover {
-    color: var(--danger);
+    color:var(--danger);
 }
 
+/* ==========================================================
+   Input Row
+========================================================== */
+
 .sp-input-row {
-    display: flex;
-    align-items: flex-end;
-    gap: 4px;
-    padding: 8px 10px;
+    display:flex;
+    align-items:flex-end;
+    gap:6px;
+    padding:9px 10px;
 }
 
 .sp-attach-btn {
-    width: 34px;
-    height: 34px;
-    border-radius: 8px;
-    border: none;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: color var(--transition), background var(--transition);
+    width:36px;
+    height:36px;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    flex-shrink:0;
+
+    border:none;
+    border-radius:10px;
+
+    background:transparent;
+    color:var(--text-muted);
+
+    cursor:pointer;
+
+    transition:all var(--sp-transition);
 }
 
 .sp-attach-btn:hover {
-    color: var(--text);
-    background: var(--surface-2);
+    background:var(--surface-2);
+    color:var(--text);
 }
 
+/* ==========================================================
+   Text Input
+========================================================== */
+
 .sp-textarea {
-    flex: 1;
-    background: transparent;
-    border: none;
-    outline: none;
-    resize: none;
-    font-size: 14px;
-    color: var(--text);
-    font-family: inherit;
-    line-height: 1.5;
-    padding: 6px 4px;
-    min-height: 34px;
-    max-height: 160px;
-    overflow-y: auto;
+    flex:1;
+
+    min-height:36px;
+    max-height:160px;
+
+    resize:none;
+
+    padding:7px 5px;
+
+    outline:none;
+    border:none;
+
+    background:transparent;
+
+    color:var(--text);
+    font-family:inherit;
+    font-size:14px;
+    line-height:1.5;
 }
 
 .sp-textarea::placeholder {
-    color: var(--text-faint);
+    color:var(--text-faint);
+}
+
+.sp-textarea--error::placeholder {
+    color:var(--danger);
 }
 
 .sp-send-btn {
-    width: 34px;
-    height: 34px;
-    border-radius: 8px;
-    border: none;
-    background: var(--accent);
-    color: #fff;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: background var(--transition), opacity var(--transition);
+    width:36px;
+    height:36px;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    flex-shrink:0;
+
+    border:none;
+    border-radius:10px;
+
+    background:var(--accent);
+    color:white;
+
+    cursor:pointer;
+
+    transition:all var(--sp-transition);
 }
 
 .sp-send-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
+    background:var(--accent-hover);
+    transform:translateY(-1px);
+}
+
+.sp-send-btn:active:not(:disabled) {
+    transform:scale(.96);
 }
 
 .sp-send-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
+    opacity:.35;
+    cursor:not-allowed;
+}
+
+.sp-input-error {
+    margin:0 4px;
+    color:var(--danger);
+    font-size:12px;
 }
 
 .sp-input-hint {
-    font-size: 11px;
-    color: var(--text-faint);
-    text-align: center;
+    text-align:center;
+    color:var(--text-faint);
+    font-size:11px;
 }
 
-/* ─── responsive ─────────────────────────────────────────── */
-@media (max-width: 600px) {
-    .sp-messages {
-        padding: 0 12px;
-    }
+/* ==========================================================
+   Retry Banner
+========================================================== */
 
-    .sp-input-wrap {
-        padding: 10px 12px 14px;
-    }
-
-    .sp-message-bubble {
-        max-width: 90%;
-    }
-}
-
-/* ─── full page error state ──────────────────────────────── */
-.sp-error-screen {
-    align-items: center;
-    justify-content: center;
-}
-
-.sp-error-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: 10px;
-    padding: 24px;
-}
-
-.sp-error-icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
-    background: var(--danger-dim);
-    border: 1px solid var(--danger);
-    color: var(--danger);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 8px;
-}
-
-.sp-error-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text);
-    margin: 0;
-}
-
-.sp-error-sub {
-    font-size: 13px;
-    color: var(--text-muted);
-    margin: 0 0 8px;
-    max-width: 300px;
-}
-
-.sp-error-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: color var(--transition), border-color var(--transition);
-}
-
-.sp-error-back:hover {
-    color: var(--text);
-    border-color: var(--text-faint);
-}
-
-/* ─── retry banner ───────────────────────────────────────── */
 .sp-retry-banner {
-    background: var(--danger-dim);
-    border-top: 1px solid var(--danger);
-    padding: 10px 20px;
-    flex-shrink: 0;
+    flex-shrink:0;
+    padding:11px 22px;
+
+    background:var(--danger-dim);
+    border-top:1px solid var(--danger);
 }
 
 .sp-retry-banner-inner {
-    max-width: 720px;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    max-width:760px;
+    margin:0 auto;
+
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
 }
 
 .sp-retry-left {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--danger);
+    display:flex;
+    align-items:center;
+    gap:8px;
+
+    color:var(--danger);
+    font-size:13px;
 }
 
 .sp-retry-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
+    display:flex;
+    align-items:center;
+    gap:8px;
 }
 
 .sp-retry-btn {
-    padding: 5px 14px;
-    background: var(--danger);
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity var(--transition);
+    padding:6px 15px;
+
+    border:none;
+    border-radius:8px;
+
+    background:var(--danger);
+    color:white;
+
+    font-size:12px;
+    font-weight:700;
+
+    cursor:pointer;
 }
 
 .sp-retry-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+    opacity:.5;
+    cursor:not-allowed;
 }
 
 .sp-retry-dismiss {
-    width: 24px;
-    height: 24px;
-    background: transparent;
-    border: none;
-    color: var(--danger);
-    cursor: pointer;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition: background var(--transition);
+    width:26px;
+    height:26px;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    border:none;
+    border-radius:6px;
+
+    background:transparent;
+    color:var(--danger);
+
+    cursor:pointer;
 }
 
 .sp-retry-dismiss:hover {
-    background: var(--danger-dim);
+    background:var(--danger-dim);
 }
+
+/* ==========================================================
+   Completion Banner
+========================================================== */
+
+.sp-completion-banner {
+    flex-shrink:0;
+
+    padding:16px 22px;
+
+    background:var(--bg);
+    border-top:1px solid var(--border);
+}
+
+.sp-completion-banner-inner {
+    max-width:760px;
+    margin:0 auto;
+
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:20px;
+}
+
+.sp-completion-text {
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+}
+
+.sp-completion-title {
+    margin:0;
+
+    font-size:16px;
+    font-weight:700;
+
+    color:var(--text);
+}
+
+.sp-completion-sub {
+    margin:0;
+
+    color:var(--text-muted);
+    font-size:13px;
+}
+
+.sp-completion-actions {
+    display:flex;
+    gap:10px;
+}
+
+.sp-completion-btn--primary,
+.sp-completion-btn--ghost {
+    padding:9px 16px;
+
+    border-radius:10px;
+
+    font-size:13px;
+    font-weight:650;
+
+    cursor:pointer;
+    text-decoration:none;
+
+    transition:all var(--sp-transition);
+}
+
+.sp-completion-btn--primary {
+    border:none;
+
+    background:var(--accent);
+    color:white;
+}
+
+.sp-completion-btn--primary:hover:not(:disabled) {
+    background:var(--accent-hover);
+}
+
+.sp-completion-btn--ghost {
+    border:1px solid var(--border);
+
+    background:transparent;
+    color:var(--text-muted);
+}
+
+.sp-completion-btn--ghost:hover {
+    border-color:var(--accent);
+    color:var(--text);
+}
+
+/* ==========================================================
+   Full Page Error State
+========================================================== */
+
+.sp-error-state {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:10px;
+
+    padding:28px;
+
+    text-align:center;
+}
+
+.sp-error-icon {
+    width:58px;
+    height:58px;
+
+    display:flex;
+    align-items:center;
+    justify-content:center;
+
+    margin-bottom:8px;
+
+    border-radius:18px;
+
+    background:var(--danger-dim);
+    border:1px solid var(--danger);
+
+    color:var(--danger);
+}
+
+.sp-error-title {
+    margin:0;
+
+    color:var(--text);
+
+    font-size:17px;
+    font-weight:700;
+}
+
+.sp-error-sub {
+    max-width:320px;
+
+    margin:0 0 10px;
+
+    color:var(--text-muted);
+
+    font-size:13px;
+    line-height:1.5;
+}
+
+.sp-error-back {
+    display:flex;
+    align-items:center;
+    gap:7px;
+
+    padding:9px 16px;
+
+    border-radius:10px;
+
+    border:1px solid var(--border);
+
+    background:transparent;
+
+    color:var(--text-muted);
+
+    font-size:13px;
+    font-weight:600;
+
+    cursor:pointer;
+
+    transition:all var(--sp-transition);
+}
+
+.sp-error-back:hover {
+    color:var(--text);
+    border-color:var(--accent);
+    background:var(--surface);
+}
+
+/* ==========================================================
+   Responsive
+========================================================== */
+
+@media (max-width:700px) {
+    .sp-header {
+        height:54px;
+        padding:0 14px;
+    }
+
+    .sp-session-title {
+        font-size:13px;
+    }
+
+    .sp-progress-wrap {
+        padding:9px 14px;
+    }
+
+    .sp-main {
+        padding-top:18px;
+    }
+
+    .sp-messages {
+        padding:0 14px;
+        gap:14px;
+    }
+
+    .sp-message-bubble {
+        max-width:92%;
+        padding:12px 14px;
+    }
+
+    .sp-question-card {
+        padding:16px;
+    }
+
+    .sp-input-wrap {
+        padding:10px 14px 14px;
+    }
+
+    .sp-completion-banner {
+        padding:14px;
+    }
+
+    .sp-completion-banner-inner {
+        flex-direction:column;
+        align-items:stretch;
+    }
+
+    .sp-completion-actions {
+        width:100%;
+    }
+
+    .sp-completion-btn--primary,
+    .sp-completion-btn--ghost {
+        flex:1;
+        text-align:center;
+    }
+
+    .sp-retry-banner {
+        padding:10px 14px;
+    }
+
+    .sp-retry-banner-inner {
+        flex-direction:column;
+        align-items:stretch;
+    }
+
+    .sp-retry-actions {
+        justify-content:flex-end;
+    }
+}
+
+@media (max-width:420px) {
+    .sp-back-btn span {
+        display:none;
+    }
+
+    .sp-empty {
+        padding-top:60px;
+    }
+
+    .sp-question-prompt {
+        font-size:14px;
+    }
+
+    .sp-choice {
+        padding:10px 12px;
+        font-size:13px;
+    }
+
+    .sp-input-row {
+        padding:8px;
+    }
+}
+
+/* ==========================================================
+   Accessibility + Interaction Polish
+========================================================== */
+
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+}
+
+.sp-choice:focus-visible {
+    border-color:var(--accent);
+}
+
+/* Prevent long content from breaking bubbles/cards */
+
+.sp-message-bubble,
+.sp-question-prompt,
+.sp-feedback-text,
+.sp-misconception {
+    overflow-wrap:anywhere;
+}
+
+/* Smooth disabled states */
+
+button:disabled {
+    user-select:none;
+}
+
+/* ==========================================================
+   Dark Theme Fine Tuning
+========================================================== */
+
+[data-theme="dark"] .sp-message--assistant .sp-message-bubble,
+[data-theme="dark"] .sp-question-card,
+[data-theme="dark"] .sp-input-box {
+    box-shadow:0 1px 2px rgba(0,0,0,.35);
+}
+
+[data-theme="dark"] .sp-choice:hover:not(:disabled) {
+    background:rgba(255,255,255,.06);
+}
+
+[data-theme="dark"] .sp-empty-icon {
+    background:rgba(59,130,246,.12);
+}
+
+/* ==========================================================
+   End
+========================================================== */

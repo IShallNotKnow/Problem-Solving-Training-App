@@ -182,22 +182,38 @@ export default function StudyPage() {
     };
 
     // ── answer ────────────────────────────────────────────────
-    const handleAnswer = async () => {
+    const isMcqAnswerMode =
+        mode === 'answer' &&
+        currentQuestion?.question_type === 'MCQ';
+
+    const handleAnswer = async (choiceIndex = null) => {
         const currentInput = inputText;
         const currentQuestion = sessionState?.questions[sessionState?.current_question_index];
         if (!currentQuestion) return;
 
-        setMessages(prev => [...prev, { role: 'user', content: currentInput }]);
+        const isMCQ = currentQuestion.question_type === 'MCQ';
+
+        if (!isMCQ) {
+            setMessages(prev => [...prev, {
+                role: 'user',
+                content: currentInput
+            }]);
+        }
+
         setInputText('');
         setLoading(true);
 
         try {
+            const body = {
+                question_id: currentQuestion.question_id,
+                ...(isMCQ
+                    ? { choice_index: choiceIndex }
+                    : { response: currentInput })
+            };
+
             const data = await apiFetch(`/sessions/${sessionId}/answer`, {
                 method: 'POST',
-                body: JSON.stringify({
-                    question_id: currentQuestion.question_id,
-                    response: currentInput,
-                }),
+                body: JSON.stringify(body),
             });
 
             setMessages(prev => [...prev, {
@@ -211,18 +227,21 @@ export default function StudyPage() {
             const nextIndex = (sessionState?.current_question_index ?? 0) + 1;
             const total = sessionState?.questions?.length ?? 0;
 
-            setSessionState(prev => ({ ...prev, current_question_index: nextIndex }));
+            setSessionState(prev => ({
+                ...prev,
+                current_question_index: nextIndex,
+            }));
 
             if (nextIndex >= total) {
                 setMode('complete');
             }
         } catch (err) {
-            // error bubble — direct reply to user's answer attempt
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: err.status < 500
-                    ? err.message
-                    : 'Could not submit your answer — please try again.',
+                content:
+                    err.status < 500
+                        ? err.message
+                        : 'Could not submit your answer — please try again.',
                 type: 'error',
             }]);
         } finally {
@@ -267,7 +286,7 @@ export default function StudyPage() {
 
     // ── send router ───────────────────────────────────────────
     const validateInput = (text, currentMode) => {
-        if (currentMode === 'answer') {
+        if (currentMode === 'answer' && currentQuestion?.question_type !== 'MCQ') {
             if (!text.trim()) return 'Answer cannot be empty';
             if (text.trim().length < 3) return 'Answer is too short';
         }
@@ -319,7 +338,9 @@ export default function StudyPage() {
 
     const placeholder =
         mode === 'answer' && currentQuestion
-            ? `Answer Q${sessionState.current_question_index + 1}...`
+            ? currentQuestion.question_type === 'MCQ'
+                ? ''
+                : `Answer Q${sessionState.current_question_index + 1}...`
             : mode === 'chat'
             ? 'Ask studykit anything...'
             : 'Paste notes or attach a file to get started...';
@@ -472,16 +493,23 @@ export default function StudyPage() {
                             </div>
                             <p className="sp-question-prompt">{currentQuestion.prompt}</p>
                             {currentQuestion.question_type === 'MCQ' && currentQuestion.choices && (
-                                <ul className="sp-choices">
+                                <div className="sp-choices">
                                     {currentQuestion.choices.map((choice, ci) => (
-                                        <li key={ci} className="sp-choice">
+                                        <button
+                                            key={ci}
+                                            type="button"
+                                            className="sp-choice"
+                                            disabled={loading}
+                                            onClick={() => handleAnswer(ci)}
+                                        >
                                             <span className="sp-choice-letter">
                                                 {String.fromCharCode(65 + ci)}
                                             </span>
-                                            {choice}
-                                        </li>
+
+                                            <span>{choice}</span>
+                                        </button>
                                     ))}
-                                </ul>
+                                </div>
                             )}
                         </div>
                     )}
@@ -598,28 +626,31 @@ export default function StudyPage() {
                                 </button>
                             )}
 
-                            <textarea
-                                className={`sp-textarea ${inputError ? 'sp-textarea--error' : ''}`}
-                                value={inputText}
-                                onChange={(e) => {
-                                    setInputText(e.target.value);
-                                    if (inputError) setInputError(null);
-                                }}
-                                onKeyDown={handleKeyDown}
-                                placeholder={placeholder}
-                                rows={1}
-                                disabled={loading}
-                            />
+                            {!isMcqAnswerMode && (
+                                <>
+                                    <textarea
+                                        className={`sp-textarea ${inputError ? 'sp-textarea--error' : ''}`}
+                                        value={inputText}
+                                        onChange={(e) => {
+                                            setInputText(e.target.value);
+                                            if (inputError) setInputError(null);
+                                        }}
+                                        onKeyDown={handleKeyDown}
+                                        placeholder={placeholder}
+                                        rows={1}
+                                        disabled={loading}
+                                    />
 
-                            <button
-                                className="sp-send-btn"
-                                type="button"
-                                onClick={handleSend}
-                                disabled={(!inputText.trim() && !file) || loading}
-                                aria-label="Send"
-                            >
-                                <IoSend size={18} />
-                            </button>
+                                    <button
+                                        className="sp-send-btn"
+                                        type="button"
+                                        onClick={handleSend}
+                                        disabled={(!inputText.trim() && !file) || loading}
+                                    >
+                                        <IoSend size={18} />
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -629,7 +660,9 @@ export default function StudyPage() {
 
                     <div className="sp-input-hint">
                         {mode === 'answer'
-                            ? 'Enter to submit answer · Shift+Enter for new line'
+                            ? currentQuestion?.question_type === 'MCQ'
+                                ? 'Select an answer above · Switch to Chat for hints'
+                                : 'Enter to submit answer · Shift+Enter for new line'
                             : 'Enter to send · Shift+Enter for new line'}
                     </div>
                 </div>

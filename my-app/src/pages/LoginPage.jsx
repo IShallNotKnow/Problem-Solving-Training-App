@@ -36,7 +36,7 @@ function LoginPage() {
 
     const handleGoogle = async () => {
         try {
-            await signInWithGoogle();
+            await signInWithGoogle(redirect='/dashboard');
         } catch (err) {
             setError(err.message);
         }

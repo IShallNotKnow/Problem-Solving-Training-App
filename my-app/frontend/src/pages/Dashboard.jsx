@@ -53,15 +53,14 @@ export default function Dashboard() {
     };
 
     const handleNewSession = async () => {
-        setCreating(true);
-        const sessionId = uuidv4();
-        try {
-            // session is created on first upload/generate — just navigate
-            navigate(`/study/${sessionId}`);
-        } catch (err) {
-            setError('Could not create a new session.');
-            setCreating(false);
-        }
+        const session = await apiFetch("/sessions", {
+            method: "POST",
+            body: JSON.stringify({
+                label: "Untitled Session",
+            }),
+        });
+
+        navigate(`/study/${session.session_id}`);
     };
 
     const fetchMessages = async () => {

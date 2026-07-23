@@ -29,7 +29,7 @@ from models import (
     Question, QuestionResult, QuestionValidationResult, GenerationResult, GenerationStatus, GenerateRequest,
     SessionState, SessionContext, SessionSummary, AnswerResponse, AnswerRequest, AnswerValidationResult,
     TopicStats, TopicResult, TopicEvidence, TopicUpdate, UploadResponse, ChatRequest, ChatResponse,
-    QuestionDTO, GenerationResultDTO, SessionStateDTO,
+    QuestionDTO, GenerationResultDTO, SessionStateDTO, CreateSessionRequest,
     IMAGE_FILTERING_TOOL, ANSWER_VALIDATION_TOOL, QUESTION_VALIDATION_TOOL, QUESTION_GENERATION_TOOL
 )
 
@@ -1196,12 +1196,6 @@ class SessionStore:
         }).execute()
         return SessionState(session_id=session_id, label=label)
 
-    async def get_or_create(self, session_id: UUID, label: str, user_id: UUID) -> SessionState:
-        try:
-            return await self.get(session_id)
-        except SessionNotFoundError:
-            return await self.create(session_id, label, user_id)
-
     async def save(self, session_id: UUID, state: SessionState) -> None:
         updates = [
             self.db.table("sessions").update({
@@ -1425,6 +1419,34 @@ async def get_storage_manager(service: AsyncClient = Depends(get_service_supabas
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.post("/sessions", response_model=SessionSummary, status_code=201)
+async def create_session(
+    req: CreateSessionRequest,
+    user=Depends(get_current_user),
+    session_store: SessionStore = Depends(get_session_store),
+):
+    session_id = uuid4()
+
+    try:
+        state = await session_store.create(
+            session_id=session_id,
+            label=req.label or "Untitled Session",
+            user_id=UUID(user["sub"]),
+        )
+    except DatabaseError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable, please retry",
+        )
+
+    return SessionSummary(
+        session_id=state.session_id,
+        label=state.label,
+        current_question_index=0,
+        created_at=state.created_at,
+        questions_count=0,
+    )
+
 @app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
 @limiter.limit("1/minute")
 async def upload(
@@ -1462,8 +1484,6 @@ async def upload(
     if content is None:
         raise HTTPException(status_code=422, detail="No meaningful content could be extracted from this document.")
 
-    await session_store.get_or_create(session_id, label=label, user_id=user["sub"])
-
     pdf_path, stored_images = await asyncio.gather(
         storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
         storage_manager.store_images(session_id, filtered_images, descriptions),
@@ -1480,7 +1500,7 @@ async def reset_session(
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     async with _session_locks[session_id]:
         try:
             state = await session_store.get(session_id)
@@ -1515,12 +1535,19 @@ async def generate(
     session_store: SessionStore = Depends(get_session_store),
     storage_manager: StorageManager = Depends(get_storage_manager),
 ):
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     try:
-        state = await session_store.get_or_create(session_id, label=req.label, user_id=user["sub"])
+        state = await session_store.get(session_id)
+    except SessionNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session {session_id} not found",
+        )
     except DatabaseError:
-        raise HTTPException(status_code=503, detail="Database unavailable, please retry")
-
-    await session_store.verify_ownership(session_id, user["sub"])
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable, please retry",
+        )
 
     profile = await session_store.get_relevant_profile(session_id, state)
     raw_images = await storage_manager.list_images(session_id)
@@ -1591,7 +1618,7 @@ async def get_session(
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
 
     try:
         state = await session_store.get(session_id)
@@ -1620,7 +1647,7 @@ async def delete_session(
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     try:
         await session_store.db.table("sessions").delete().eq("session_id", session_id).execute()
     except Exception:
@@ -1637,7 +1664,7 @@ async def submit_answer(
     answer_validator: AnswerValidator = Depends(get_answer_validator),
     difficulty_controller: DifficultyController = Depends(get_difficulty_controller),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     async with _session_locks[session_id]:
         try:
             state = await session_store.get(session_id)
@@ -1747,7 +1774,7 @@ async def chat(
     session_store: SessionStore = Depends(get_session_store),
     study_chat: StudyChatAssistant = Depends(get_study_chat_assistant),
 ):
-    await session_store.verify_ownership(session_id, user["sub"])
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     try:
         state = await session_store.get(session_id)
     except SessionNotFoundError:

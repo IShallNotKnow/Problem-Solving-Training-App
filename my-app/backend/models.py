@@ -9,6 +9,9 @@ from datetime import datetime
 # Models
 # ---------------------------------------------------------------------------
 
+class CreateSessionRequest(BaseModel):
+    label: str | None = None
+
 class GenerationStatus(str, Enum):
     GENERATED = "generated"
     FAILED_VALIDATION = "failed_validation"

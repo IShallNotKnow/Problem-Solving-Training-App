@@ -1,32 +1,39 @@
 import { useState } from 'react';
-import { useLocation, useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import './LoginPage.css';
 import { supabase } from "../utils/supabase.js";
 
-function LoginPage() {
+function SignupPage() {
     const { theme, toggleTheme } = useTheme();
     const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [confirm, setConfirm] = useState('');
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const location = useLocation();
     const navigate = useNavigate();
-    const { signIn, signInWithGoogle } = useAuth();
+    const { signUp, signInWithGoogle } = useAuth();
 
     const params = new URLSearchParams(location.search);
-    const redirect = params.get('redirect') || '/dashboard';
+    const redirectPage = params.get('redirect') || '/dashboard';
 
-    const handleLogin = async (e) => {
+    const handleSignup = async (e) => {
         e.preventDefault();
-        setLoading(true);
         setError(null);
+        
+        if (password !== confirm) {
+            setError('Passwords do not match.');
+            return;
+        }
+
+        setLoading(true);
 
         try {
-            await signIn(email, password);
-            navigate(redirect); // goes to /dashboard or wherever they came from
+            await signUp(email, password);
+            navigate(redirectPage); // goes to /dashboard or wherever they came from
         } catch (err) {
             setError(err.message);
         } finally {
@@ -36,7 +43,7 @@ function LoginPage() {
 
     const handleGoogle = async () => {
         try {
-            await signInWithGoogle(redirect='/dashboard');
+            await signInWithGoogle(redirectPage);
         } catch (err) {
             setError(err.message);
         }
@@ -50,18 +57,18 @@ function LoginPage() {
                 </button>
                 <div className="login-brand">studykit</div>
                 <div>
-                    <div className="login-tagline">Turn your notes into questions worth asking.</div>
+                    <div className="login-tagline">Your notes, turned into the questions that actually matter.</div>
                     <div className="login-sub">Upload slides. Generate questions. Actually study.</div>
                 </div>
             </div>
 
             <div className="login-right">
-                <h1 className="login-heading">Welcome back</h1>
-                <p className="login-subheading">Sign in to your account to continue</p>
+                <h1 className="login-heading">Create an account</h1>
+                <p className="login-subheading">Free to get started, no credit card needed</p>
 
                 {error && <div className="login-error">{error}</div>}
 
-                <form onSubmit={handleLogin}>
+                <form onSubmit={handleSignup}>
                     <div className="field">
                         <label htmlFor="email">Email</label>
                         <input
@@ -84,9 +91,19 @@ function LoginPage() {
                             required
                         />
                     </div>
-                    <div className="forgot">Forgot password?</div>
+                    <div className="field">
+                        <label htmlFor="confirm">Confirm password</label>
+                        <input
+                            id="confirm"
+                            type="password"
+                            placeholder="••••••••"
+                            value={confirm}
+                            onChange={(e) => setConfirm(e.target.value)}
+                            required
+                        />
+                    </div>
                     <button className="btn-primary" type="submit" disabled={loading}>
-                        {loading ? 'Signing in...' : 'Sign in'}
+                        {loading ? 'Creating account...' : 'Create account'}
                     </button>
                 </form>
 
@@ -107,11 +124,11 @@ function LoginPage() {
                 </button>
 
                 <p className="signup-nudge">
-                    Don't have an account? <Link to={`/signup?redirect=${encodeURIComponent(redirect)}`} className="hp-nav-link">Sign up for free</Link>
+                    Already have an account? <Link to={`/login?redirect=${encodeURIComponent(redirectPage)}`} className="hp-nav-link">Sign in</Link>
                 </p>
             </div>
         </div>
     );
 }
 
-export default LoginPage;
+export default SignupPage;

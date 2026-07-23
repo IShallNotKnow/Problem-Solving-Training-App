@@ -1,39 +1,32 @@
 import { useState } from 'react';
-import { useTheme } from '../context/ThemeContext.jsx';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useTheme } from '../context/ThemeContext.jsx';
 import './LoginPage.css';
 import { supabase } from "../utils/supabase.js";
 
-function SignupPage() {
+function LoginPage() {
     const { theme, toggleTheme } = useTheme();
     const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [confirm, setConfirm] = useState('');
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(false);
     const location = useLocation();
     const navigate = useNavigate();
-    const { signUp } = useAuth();
+    const { signIn, signInWithGoogle } = useAuth();
 
     const params = new URLSearchParams(location.search);
-    const redirect = params.get('redirect') || '/dashboard';
+    const redirectPage = params.get('redirect') || '/dashboard';
 
-    const handleSignup = async (e) => {
+    const handleLogin = async (e) => {
         e.preventDefault();
-        setError(null);
-        
-        if (password !== confirm) {
-            setError('Passwords do not match.');
-            return;
-        }
-
         setLoading(true);
+        setError(null);
 
         try {
-            await signUp(email, password);
-            navigate(redirect); // goes to /dashboard or wherever they came from
+            await signIn(email, password);
+            navigate(redirectPage); // goes to /dashboard or wherever they came from
         } catch (err) {
             setError(err.message);
         } finally {
@@ -43,7 +36,7 @@ function SignupPage() {
 
     const handleGoogle = async () => {
         try {
-            await signInWithGoogle(redirect='/dashboard');
+            await signInWithGoogle(redirectPage);
         } catch (err) {
             setError(err.message);
         }
@@ -57,18 +50,18 @@ function SignupPage() {
                 </button>
                 <div className="login-brand">studykit</div>
                 <div>
-                    <div className="login-tagline">Your notes, turned into the questions that actually matter.</div>
+                    <div className="login-tagline">Turn your notes into questions worth asking.</div>
                     <div className="login-sub">Upload slides. Generate questions. Actually study.</div>
                 </div>
             </div>
 
             <div className="login-right">
-                <h1 className="login-heading">Create an account</h1>
-                <p className="login-subheading">Free to get started, no credit card needed</p>
+                <h1 className="login-heading">Welcome back</h1>
+                <p className="login-subheading">Sign in to your account to continue</p>
 
                 {error && <div className="login-error">{error}</div>}
 
-                <form onSubmit={handleSignup}>
+                <form onSubmit={handleLogin}>
                     <div className="field">
                         <label htmlFor="email">Email</label>
                         <input
@@ -91,19 +84,9 @@ function SignupPage() {
                             required
                         />
                     </div>
-                    <div className="field">
-                        <label htmlFor="confirm">Confirm password</label>
-                        <input
-                            id="confirm"
-                            type="password"
-                            placeholder="••••••••"
-                            value={confirm}
-                            onChange={(e) => setConfirm(e.target.value)}
-                            required
-                        />
-                    </div>
+                    <div className="forgot">Forgot password?</div>
                     <button className="btn-primary" type="submit" disabled={loading}>
-                        {loading ? 'Creating account...' : 'Create account'}
+                        {loading ? 'Signing in...' : 'Sign in'}
                     </button>
                 </form>
 
@@ -124,11 +107,11 @@ function SignupPage() {
                 </button>
 
                 <p className="signup-nudge">
-                    Already have an account? <Link to={`/login?redirect=${encodeURIComponent(redirect)}`} className="hp-nav-link">Sign in</Link>
+                    Don't have an account? <Link to={`/signup?redirect=${encodeURIComponent(redirectPage)}`} className="hp-nav-link">Sign up for free</Link>
                 </p>
             </div>
         </div>
     );
 }
 
-export default SignupPage;
+export default LoginPage;

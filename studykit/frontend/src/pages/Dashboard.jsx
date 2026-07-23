@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useLocation, useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
-import { v4 as uuidv4 } from 'uuid';
 import { FiPlus, FiBook, FiClock, FiTrash2, FiSun, FiMoon, FiLogOut } from 'react-icons/fi';
+import { apiFetch } from '../utils/api.js'
 import './Dashboard.css';
 
 function formatRelativeTime(dateStr) {
@@ -23,14 +23,11 @@ export default function Dashboard() {
     const { theme, toggleTheme } = useTheme();
     const [sessions, setSessions] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [creating, setCreating] = useState(false);
     const [deletingId, setDeletingId] = useState(null);
     const [error, setError] = useState(null);
-    const location = useLocation();
     const navigate = useNavigate();
     const { signOut } = useAuth();
-
-    const params = new URLSearchParams(location.search);
+    const creating = useState(false);
     const redirect = '/';
 
     useEffect(() => {
@@ -45,7 +42,7 @@ export default function Dashboard() {
             if (!res.ok) throw new Error('Failed to load sessions');
             const data = await res.json();
             setSessions(data);
-        } catch (err) {
+        } catch {
             setError('Could not load your sessions. Check your connection and try again.');
         } finally {
             setLoading(false);
@@ -63,27 +60,13 @@ export default function Dashboard() {
         navigate(`/study/${session.session_id}`);
     };
 
-    const fetchMessages = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-            const res = await apiFetch('http://localhost:8000/sessions');
-            if (!res.ok) throw new Error('Failed to load sessions');
-            const data = await res.json();
-        } catch (err) {
-            setError('Could not load chat history. Please try again.');
-        } finally {
-            setLoading(false);
-        }
-    }
-
     const handleDelete = async (e, sessionId) => {
         e.stopPropagation();
         setDeletingId(sessionId);
         try {
             await apiFetch(`http://localhost:8000/sessions/${sessionId}`, { method: 'DELETE' });
             setSessions(prev => prev.filter(s => s.session_id !== sessionId));
-        } catch (err) {
+        } catch {
             setError('Could not delete session.');
         } finally {
             setDeletingId(null);
@@ -182,58 +165,78 @@ export default function Dashboard() {
                             <span>New session</span>
                         </button>
 
-                        {sessions.map(session => {
+                        {sessions.map((session) => {
                             const progress = getSessionProgress(session);
                             const isDeleting = deletingId === session.session_id;
 
                             return (
-                                <button
+                                <div
                                     key={session.session_id}
-                                    className="dash-card dash-card--session"
-                                    onClick={() => navigate(`/study/${session.session_id}`)}
-                                    disabled={isDeleting}
+                                    className={`dash-card dash-card--session ${
+                                        isDeleting ? "is-deleting" : ""
+                                    }`}
                                 >
-                                    <div className="dash-card-top">
-                                        <div className="dash-card-icon">
-                                            <FiBook size={16} />
-                                        </div>
-                                        <button
-                                            className="dash-card-delete"
-                                            onClick={(e) => handleDelete(e, session.session_id)}
-                                            aria-label="Delete session"
-                                            disabled={isDeleting}
-                                        >
-                                            <FiTrash2 size={14} />
-                                        </button>
-                                    </div>
-
-                                    <div className="dash-card-body">
-                                        <p className="dash-card-title">
-                                            {session.label || 'Untitled session'}
-                                        </p>
-                                        {progress && (
-                                            <div className="dash-card-progress">
-                                                <div className="dash-progress-bar">
-                                                    <div
-                                                        className="dash-progress-fill"
-                                                        style={{ width: `${progress.pct}%` }}
-                                                    />
-                                                </div>
-                                                <span className="dash-progress-label">
-                                                    {progress.done}/{progress.total} questions
-                                                </span>
+                                    <Link
+                                        to={`/study/${session.session_id}`}
+                                        className="dash-card-link"
+                                        aria-disabled={isDeleting}
+                                        onClick={(e) => {
+                                            if (isDeleting) {
+                                                e.preventDefault();
+                                            }
+                                        }}
+                                    >
+                                        <div className="dash-card-top">
+                                            <div className="dash-card-icon">
+                                                <FiBook size={16} />
                                             </div>
-                                        )}
-                                        {!progress && (
-                                            <span className="dash-card-badge">Ready to generate</span>
-                                        )}
-                                    </div>
+                                        </div>
 
-                                    <div className="dash-card-footer">
-                                        <FiClock size={11} />
-                                        <span>{formatRelativeTime(session.last_active_at || session.created_at)}</span>
-                                    </div>
-                                </button>
+                                        <div className="dash-card-body">
+                                            <p className="dash-card-title">
+                                                {session.label || "Untitled session"}
+                                            </p>
+
+                                            {progress ? (
+                                                <div className="dash-card-progress">
+                                                    <div className="dash-progress-bar">
+                                                        <div
+                                                            className="dash-progress-fill"
+                                                            style={{ width: `${progress.pct}%` }}
+                                                        />
+                                                    </div>
+
+                                                    <span className="dash-progress-label">
+                                                        {progress.done}/{progress.total} questions
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <span className="dash-card-badge">
+                                                    Ready to generate
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        <div className="dash-card-footer">
+                                            <FiClock size={11} />
+                                            <span>
+                                                {formatRelativeTime(
+                                                    session.last_active_at || session.created_at
+                                                )}
+                                            </span>
+                                        </div>
+                                    </Link>
+
+                                    <button
+                                        type="button"
+                                        className="dash-card-delete"
+                                        onClick={(e) => handleDelete(e, session.session_id)}
+                                        aria-label="Delete session"
+                                        disabled={isDeleting}
+                                    >
+                                        <FiTrash2 size={14} />
+                                    </button>
+                                </div>
                             );
                         })}
                     </div>

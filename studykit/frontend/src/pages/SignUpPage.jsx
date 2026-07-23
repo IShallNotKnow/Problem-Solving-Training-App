@@ -3,11 +3,9 @@ import { useTheme } from '../context/ThemeContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import './LoginPage.css';
-import { supabase } from "../utils/supabase.js";
 
 function SignupPage() {
     const { theme, toggleTheme } = useTheme();
-    const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [confirm, setConfirm] = useState('');

@@ -1,4 +1,4 @@
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import './HomePage.css';
@@ -72,10 +72,10 @@ function HomePage() {
                     <div>
                         <div className="hp-section-label">Problem solving</div>
                         <h2 className="hp-problem-title">
-                            Don't just memorize. Learn to <em>think through it.</em>
+                            Don&apos;t just memorize. Learn to <em>think through it.</em>
                         </h2>
                         <p className="hp-problem-desc">
-                            For CS and math, flashcards aren't enough. Studykit generates novel
+                            For CS and math, flashcards aren&apos;t enough. Studykit generates novel
                             practice problems that test how you apply concepts, not just whether
                             you remember them.
                         </p>

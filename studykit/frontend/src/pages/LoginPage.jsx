@@ -3,11 +3,9 @@ import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useTheme } from '../context/ThemeContext.jsx';
 import './LoginPage.css';
-import { supabase } from "../utils/supabase.js";
 
 function LoginPage() {
     const { theme, toggleTheme } = useTheme();
-    const { user } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState(null);
@@ -84,10 +82,7 @@ function LoginPage() {
                             required
                         />
                     </div>
-                    <div className="forgot">Forgot password?</div>
-                    <button className="btn-primary" type="submit" disabled={loading}>
-                        {loading ? 'Signing in...' : 'Sign in'}
-                    </button>
+                    <Link to="/forgot-password" className="forgot">Forgot password?</Link>
                 </form>
 
                 <div className="divider">
@@ -107,7 +102,7 @@ function LoginPage() {
                 </button>
 
                 <p className="signup-nudge">
-                    Don't have an account? <Link to={`/signup?redirect=${encodeURIComponent(redirectPage)}`} className="hp-nav-link">Sign up for free</Link>
+                    Don&apos;t have an account? <Link to={`/signup?redirect=${encodeURIComponent(redirectPage)}`} className="hp-nav-link">Sign up for free</Link>
                 </p>
             </div>
         </div>

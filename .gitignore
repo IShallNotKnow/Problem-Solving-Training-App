@@ -4,6 +4,7 @@ venv/
 .venv/
 test_files/
 node_modules/
+.ruff_cache
 
 # Logs
 logs

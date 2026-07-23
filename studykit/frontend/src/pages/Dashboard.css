@@ -197,7 +197,6 @@
     border-radius: var(--radius);
     border: 1px solid var(--border);
     background: var(--surface);
-    cursor: pointer;
     text-align: left;
     transition: border-color var(--transition), background var(--transition), transform var(--transition);
     padding: 20px;
@@ -208,18 +207,18 @@
     position: relative;
 }
 
-.dash-card:hover:not(:disabled) {
+.dash-card--session:hover {
     border-color: var(--accent);
     background: var(--surface-2);
     transform: translateY(-1px);
 }
 
-.dash-card:disabled {
+.dash-card.is-deleting {
     opacity: 0.5;
-    cursor: not-allowed;
+    pointer-events: none;
 }
 
-/* new session card */
+/* new session */
 .dash-card--new {
     align-items: center;
     justify-content: center;
@@ -229,6 +228,7 @@
     font-size: 14px;
     font-weight: 500;
     background: transparent;
+    cursor: pointer;
 }
 
 .dash-card--new:hover:not(:disabled) {
@@ -241,11 +241,18 @@
     color: inherit;
 }
 
-/* session card internals */
+/* session */
+.dash-card-link {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    text-decoration: none;
+    color: inherit;
+}
+
 .dash-card-top {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
     margin-bottom: 14px;
 }
 
@@ -262,6 +269,11 @@
 }
 
 .dash-card-delete {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    z-index: 2;
+
     width: 28px;
     height: 28px;
     border-radius: 6px;
@@ -313,7 +325,6 @@
     display: inline-block;
 }
 
-/* progress */
 .dash-card-progress {
     display: flex;
     flex-direction: column;
@@ -346,85 +357,4 @@
     margin-top: 14px;
     font-size: 11px;
     color: var(--text-faint);
-}
-
-/* ─── empty state ────────────────────────────────────────── */
-.dash-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 80px 24px;
-    gap: 10px;
-}
-
-.dash-empty-icon {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-}
-
-.dash-empty-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text);
-    margin: 0;
-}
-
-.dash-empty-sub {
-    font-size: 13px;
-    color: var(--text-muted);
-    margin: 0 0 16px;
-    max-width: 320px;
-}
-
-/* ─── shared button ──────────────────────────────────────── */
-.dash-new-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background var(--transition), opacity var(--transition);
-}
-
-.dash-new-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
-}
-
-.dash-new-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* ─── responsive ─────────────────────────────────────────── */
-@media (max-width: 600px) {
-    .dash-header-inner,
-    .dash-main {
-        padding-left: 16px;
-        padding-right: 16px;
-    }
-
-    .dash-title {
-        font-size: 22px;
-    }
-
-    .dash-grid,
-    .dash-skeleton-grid {
-        grid-template-columns: 1fr;
-    }
 }

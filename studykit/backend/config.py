@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_jwt_secret: str
     llama_cloud_api_key: str
-    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
 
     class Config:
         env_file = ".env"

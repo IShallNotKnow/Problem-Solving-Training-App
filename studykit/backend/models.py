@@ -252,239 +252,330 @@ class SessionStateDTO(BaseModel):
 # ---------------------------------------------------------------------------
 
 QUESTION_GENERATION_TOOL = {
-    "name": "generate_questions",
-    "description": "Submit a batch of generated study questions with answers and grading rubrics.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "questions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question_id": {
-                            "type": "string",
-                            "description": "Unique short id, e.g. 'q1', 'q2'."
-                        },
-                        "question_type": {
-                            "type": "string",
-                            "enum": ["MCQ", "FRQ"]
-                        },
-                        "topic_difficulties": {
-                            "type": "object",
-                            "description": (
-                                "Maps each tested topic to its target ELO difficulty (300=novice recall, "
-                                "1650=intermediate application, 3000=expert synthesis). "
-                                "Each key must exactly match an entry in the session's topic list. "
-                                "Synthesis questions must include one entry per combined topic."
-                            ),
-                            "additionalProperties": {
-                                "type": "integer",
-                                "minimum": 300,
-                                "maximum": 3000
+    "type": "function",
+    "function": {
+        "name": "generate_questions",
+        "description": "Submit a batch of generated study questions with answers and grading rubrics.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question_id": {
+                                "type": "string",
+                                "description": "Unique short id, e.g. 'q1', 'q2'."
                             },
-                            "minProperties": 1
+                            "question_type": {
+                                "type": "string",
+                                "enum": ["MCQ", "FRQ"]
+                            },
+                            "topic_difficulties": {
+                                "type": "object",
+                                "description": (
+                                    "Maps each tested topic to its target ELO difficulty "
+                                    "(300=novice recall, 1650=intermediate application, "
+                                    "3000=expert synthesis). Each key must exactly match "
+                                    "an entry in the session's topic list. Synthesis "
+                                    "questions must include one entry per combined topic."
+                                ),
+                                "additionalProperties": {
+                                    "type": "integer",
+                                    "minimum": 300,
+                                    "maximum": 3000
+                                },
+                                "minProperties": 1
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "The question text shown to the student."
+                            },
+                            "choices": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                                "minItems": 3,
+                                "maxItems": 5,
+                                "description": (
+                                    "MCQ only. 3-5 answer options, plain text, "
+                                    "no leading letters like 'A)'. Null for FRQ."
+                                )
+                            },
+                            "correct_choice_index": {
+                                "type": ["integer", "null"],
+                                "description": (
+                                    "MCQ only. 0-based index into `choices` "
+                                    "for the correct answer. Null for FRQ."
+                                )
+                            },
+                            "correct_answer": {
+                                "type": "string",
+                                "description": (
+                                    "MCQ: the correct choice text. "
+                                    "FRQ: a complete, ideal model answer."
+                                )
+                            },
+                            "rubric_points": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                                "description": (
+                                    "FRQ only. 2-5 discrete, checkable points "
+                                    "a correct answer must hit. Null for MCQ."
+                                )
+                            },
+                            "explanation": {
+                                "type": "string",
+                                "description": (
+                                    "1-2 sentences on why the correct answer "
+                                    "is right, shown after grading."
+                                )
+                            }
                         },
-                        "prompt": {
-                            "type": "string",
-                            "description": "The question text shown to the student."
-                        },
-                        "choices": {
-                            "type": ["array", "null"],
-                            "items": {"type": "string"},
-                            "minItems": 3,
-                            "maxItems": 5,
-                            "description": "MCQ only. 3-5 answer options, plain text, no leading letters like 'A)'. Null for FRQ."
-                        },
-                        "correct_choice_index": {
-                            "type": ["integer", "null"],
-                            "description": "MCQ only. 0-based index into `choices` for the correct answer. Null for FRQ."
-                        },
-                        "correct_answer": {
-                            "type": "string",
-                            "description": "MCQ: the correct choice text. FRQ: a complete, ideal model answer."
-                        },
-                        "rubric_points": {
-                            "type": ["array", "null"],
-                            "items": {"type": "string"},
-                            "description": "FRQ only. 2-5 discrete, checkable points a correct answer must hit. Null for MCQ."
-                        },
-                        "explanation": {
-                            "type": "string",
-                            "description": "1-2 sentences on why the correct answer is right, shown after grading."
-                        }
-                    },
-                    "required": [
-                        "question_id", "question_type", "topic_difficulties",
-                        "prompt", "correct_answer", "explanation"
-                    ],
-                    "additionalProperties": False
+                        "required": [
+                            "question_id",
+                            "question_type",
+                            "topic_difficulties",
+                            "prompt",
+                            "correct_answer",
+                            "explanation"
+                        ],
+                        "additionalProperties": False
+                    }
                 }
-            }
-        },
-        "required": ["questions"],
-        "additionalProperties": False
+            },
+            "required": ["questions"],
+            "additionalProperties": False
+        }
     }
-}
+    }
 
 QUESTION_VALIDATION_TOOL = {
-    "name": "validate_questions",
-    "description": "Review a batch of generated questions for correctness, difficulty accuracy, and quality.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "reviews": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question_id": {"type": "string"},
-                        "approved": {
-                            "type": "boolean",
-                            "description": "True only if the question is correct, unambiguous, at its stated difficulty, and tests understanding rather than rote recall."
+    "type": "function",
+    "function": {
+        "name": "validate_questions",
+        "description": "Review a batch of generated questions for correctness, difficulty accuracy, and quality.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reviews": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question_id": {
+                                "type": "string"
+                            },
+                            "approved": {
+                                "type": "boolean",
+                                "description": (
+                                    "True only if the question is correct, "
+                                    "unambiguous, at its stated difficulty, "
+                                    "and tests understanding rather than rote recall."
+                                ),
+                            },
+                            "feedback": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Required if approved is false. "
+                                    "Specific, actionable fix instructions. "
+                                    "Null if approved."
+                                ),
+                            },
                         },
-                        "feedback": {
-                            "type": ["string", "null"],
-                            "description": "Required if approved is false. Specific, actionable fix instructions. Null if approved."
-                        }
+                        "required": [
+                            "question_id",
+                            "approved",
+                            "feedback",
+                        ],
+                        "additionalProperties": False,
                     },
-                    "required": ["question_id", "approved", "feedback"],
-                    "additionalProperties": False
                 }
-            }
+            },
+            "required": ["reviews"],
+            "additionalProperties": False,
         },
-        "required": ["reviews"],
-        "additionalProperties": False
-    }
+    },
 }
 
 ANSWER_VALIDATION_TOOL = {
-    "name": "submit_grading",
-    "description": "Submit graded results for each student response.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "results": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "question_id": {"type": "string"},
-                        "score": {
-                            "type": "number",
-                            "minimum": 0.0,
-                            "maximum": 1.0,
-                            "description": "0.0 (fully wrong) to 1.0 (fully correct). Use partial credit for FRQs."
-                        },
-                        "correct": {
-                            "type": "boolean",
-                            "description": "True only if score >= 0.85"
-                        },
-                        "feedback": {
-                            "type": "string",
-                            "description": "1-3 sentences specific to what the student wrote."
-                        },
-                        "misconception": {
-                            "type": ["string", "null"],
-                            "description": "Short tag for a recurring error type if present, else null."
-                        },
-                        "topic_results": {
-                            "type": "array",
-                            "minItems": 1,
-                            "description": "Per-topic breakdown for questions covering multiple concepts. Required when the question has more than one topic.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "topic": {"type": "string"},
-                                    "score": {
-                                        "type": "number",
-                                        "minimum": 0.0,
-                                        "maximum": 1.0,
-                                        "description": "0.0 to 1.0 — how well the student demonstrated understanding of this specific topic, independent of the question-level score."
+    "type": "function",
+    "function": {
+        "name": "submit_grading",
+        "description": "Submit graded results for each student response.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question_id": {
+                                "type": "string"
+                            },
+                            "score": {
+                                "type": "number",
+                                "minimum": 0.0,
+                                "maximum": 1.0,
+                                "description": (
+                                    "0.0 (fully wrong) to 1.0 (fully correct). "
+                                    "Use partial credit for FRQs."
+                                ),
+                            },
+                            "correct": {
+                                "type": "boolean",
+                                "description": (
+                                    "True only if score >= 0.85"
+                                ),
+                            },
+                            "feedback": {
+                                "type": "string",
+                                "description": (
+                                    "1-3 sentences specific to what the student wrote."
+                                ),
+                            },
+                            "misconception": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Short tag for a recurring error type if present, "
+                                    "else null."
+                                ),
+                            },
+                            "topic_results": {
+                                "type": "array",
+                                "minItems": 1,
+                                "description": (
+                                    "Per-topic breakdown for questions covering "
+                                    "multiple concepts. Required when the question "
+                                    "has more than one topic."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "topic": {
+                                            "type": "string"
+                                        },
+                                        "score": {
+                                            "type": "number",
+                                            "minimum": 0.0,
+                                            "maximum": 1.0,
+                                            "description": (
+                                                "0.0 to 1.0 — how well the student "
+                                                "demonstrated understanding of this "
+                                                "specific topic."
+                                            ),
+                                        },
+                                        "correct": {
+                                            "type": "boolean"
+                                        },
+                                        "confidence": {
+                                            "type": "number",
+                                            "minimum": 0.0,
+                                            "maximum": 1.0,
+                                            "description": (
+                                                "0.0 to 1.0 — confidence in this "
+                                                "topic assessment."
+                                            ),
+                                        },
+                                        "adaptation_signal": {
+                                            "type": "number",
+                                            "minimum": -1.0,
+                                            "maximum": 1.0,
+                                            "description": (
+                                                "Directional evidence for difficulty "
+                                                "adjustment. -1.0 means well below the "
+                                                "current difficulty, 0.0 means expected "
+                                                "performance, and +1.0 means well above "
+                                                "the current difficulty."
+                                            ),
+                                        },
+                                        "misconception": {
+                                            "type": ["string", "null"],
+                                            "description": (
+                                                "Short tag for a recurring error type "
+                                                "specific to this topic if identifiable."
+                                            ),
+                                        },
+                                        "feedback": {
+                                            "type": "string",
+                                            "description": (
+                                                "What specifically went wrong or right "
+                                                "on this concept."
+                                            ),
+                                        },
                                     },
-                                    "correct": {"type": "boolean"},
-                                    "confidence": {
-                                        "type": "number",
-                                        "minimum": 0.0,
-                                        "maximum": 1.0,
-                                        "description": "0.0 to 1.0 — how certain you are in this topic grade given the student's response."
-                                    },
-                                    "adaptation_signal": {
-                                        "type": "number",
-                                        "minimum": -1.0,
-                                        "maximum": 1.0,
-                                        "description": (
-                                            "Directional evidence for difficulty adjustment, -1.0 to +1.0. "
-                                            "This is your read on the student's ability relative to this topic's current difficulty — "
-                                            "not a delta computation. The difficulty controller will weigh this against history.\n"
-                                            "-1.0: student appears well below current difficulty on this topic.\n"
-                                            " 0.0: performance matches expectations.\n"
-                                            "+1.0: student appears well above current difficulty on this topic."
-                                        ),
-                                    },
-                                    "misconception": {
-                                        "type": ["string", "null"],
-                                        "description": "Short tag for a recurring error type specific to this topic if identifiable, else null."
-                                    },
-                                    "feedback": {
-                                        "type": "string",
-                                        "description": "What specifically went wrong or right on this concept."
-                                    },
+                                    "required": [
+                                        "topic",
+                                        "score",
+                                        "correct",
+                                        "confidence",
+                                        "adaptation_signal",
+                                        "misconception",
+                                        "feedback",
+                                    ],
+                                    "additionalProperties": False,
                                 },
-                                "required": [
-                                    "topic",
-                                    "score",
-                                    "correct",
-                                    "confidence",
-                                    "adaptation_signal",
-                                    "misconception",
-                                    "feedback",
-                                ],
-                                "additionalProperties": False,
                             },
                         },
+                        "required": [
+                            "question_id",
+                            "score",
+                            "correct",
+                            "feedback",
+                            "misconception",
+                            "topic_results",
+                        ],
+                        "additionalProperties": False,
                     },
-                    "required": [
-                        "question_id",
-                        "score",
-                        "correct",
-                        "feedback",
-                        "misconception",
-                        "topic_results",
-                    ],
-                    "additionalProperties": False,
-                },
-            }
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": False,
         },
-        "required": ["results"],
-        "additionalProperties": False,
     },
 }
 
 IMAGE_FILTERING_TOOL = {
-    "name": "filter_images",
-    "description": "Semantically filter images based on their relation to a lecture PDF.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "filtered_images": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "keep": {
-                            "type": "boolean",
-                            "description": "True if it contains academically meaningful content. False if decorative or irrelevant."
+    "type": "function",
+    "function": {
+        "name": "filter_images",
+        "description": "Semantically filter images based on their relation to a lecture PDF.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filtered_images": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "keep": {
+                                "type": "boolean",
+                                "description": (
+                                    "True if the image contains academically meaningful "
+                                    "content. False if it is decorative or irrelevant."
+                                ),
+                            },
+                            "description": {
+                                "type": ["string", "null"],
+                                "description": (
+                                    "Concise description of the academic content. "
+                                    "Null if keep is false."
+                                ),
+                            },
                         },
-                        "description": {
-                            "type": ["string", "null"],
-                            "description": "Concise description of the academic content. Null if 'keep' is false."
-                        }
+                        "required": [
+                            "keep",
+                            "description",
+                        ],
+                        "additionalProperties": False,
                     },
-                    "required": ['keep', 'description']
                 }
-            }
+            },
+            "required": [
+                "filtered_images",
+            ],
+            "additionalProperties": False,
         },
-        "required": ["filtered_images"]
-    }
+    },
 }

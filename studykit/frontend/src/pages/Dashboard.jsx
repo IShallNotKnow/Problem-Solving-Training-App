@@ -38,7 +38,7 @@ export default function Dashboard() {
         setLoading(true);
         setError(null);
         try {
-            const res = await apiFetch('http://localhost:8000/sessions');
+            const res = await apiFetch('/sessions');
             if (!res.ok) throw new Error('Failed to load sessions');
             const data = await res.json();
             setSessions(data);
@@ -64,7 +64,7 @@ export default function Dashboard() {
         e.stopPropagation();
         setDeletingId(sessionId);
         try {
-            await apiFetch(`http://localhost:8000/sessions/${sessionId}`, { method: 'DELETE' });
+            await apiFetch(`/sessions/${sessionId}`, { method: 'DELETE' });
             setSessions(prev => prev.filter(s => s.session_id !== sessionId));
         } catch {
             setError('Could not delete session.');

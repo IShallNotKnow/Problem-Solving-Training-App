@@ -11,7 +11,7 @@ import base64
 import json
 from pydantic import ValidationError
 from uuid import UUID, uuid4
-from supabase import acreate_client, AsyncClient
+from supabase import acreate_client, AsyncClient, AsyncClientOptions
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from slowapi import Limiter
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
     app.state.service = await acreate_client(
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY,
-        http_client=app.state.http,
+        options=AsyncClientOptions(httpx_client=app.state.http),
     )
 
     yield
@@ -163,8 +163,8 @@ async def async_timeout_error_handler(request: Request, exc: asyncio.TimeoutErro
         content={"error": "service_unavailable", "detail": "Request timed out, please retry"},
     )
 
-@app.exception_handler(httpx.TimeoutError)
-async def httpx_timeout_error_handler(request: Request, exc: httpx.TimeoutError):
+@app.exception_handler(httpx.TimeoutException)
+async def httpx_timeout_error_handler(request: Request, exc: httpx.TimeoutException):
     return JSONResponse(
         status_code=503,
         headers={"Retry-After": "10"},
@@ -1501,6 +1501,7 @@ async def create_session(
 @app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
 @limiter.limit("1/minute")
 async def upload(
+    request: Request,
     session_id: UUID,
     label: str,
     file: UploadFile = File(...),
@@ -1578,6 +1579,7 @@ async def reset_session(
 @app.post("/sessions/{session_id}/generate", response_model=GenerationResultDTO)
 @limiter.limit("2/minute")
 async def generate(
+    request: Request,
     session_id: UUID,
     req: GenerateRequest,
     user=Depends(get_current_user),
@@ -1691,6 +1693,7 @@ async def delete_session(
 @app.post("/sessions/{session_id}/answer", response_model=AnswerResponse)
 @limiter.limit("45/minute")
 async def submit_answer(
+    request: Request,
     session_id: UUID,
     req: AnswerRequest,
     user=Depends(get_current_user),
@@ -1806,11 +1809,12 @@ async def submit_answer(
 @app.post("/sessions/{session_id}/chat", response_model=ChatResponse)
 @limiter.limit("45/minute")
 async def chat(
+    request: Request,
     session_id: UUID,
     req: ChatRequest,
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
-    study_chat: StudyChatAssistant = Depends(get_study_chat_assistant),
+    study_chat: StudyChatAssistant = Depends(get_study_chat_assistant)
 ):
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
     try:

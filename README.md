@@ -171,8 +171,6 @@ Row-level security is enabled on all tables. The backend uses two Supabase clien
 
 **Single-process rate limiting.** `slowapi` uses an in-process counter backed by Valkey. Correct under a single worker; would need sticky sessions or a shared counter under multiple workers.
 
-**Session locks are in-process.** `_session_locks` (a `defaultdict` of `asyncio.Lock`) prevents concurrent writes within one process but not across multiple workers. The answer submission path is the highest risk; the correct fix is to move the read-modify-write into a transactional Postgres RPC (see `submit_answer` in the Postgres functions).
-
 **No streaming.** Generation and answer validation block until Claude returns a full response. Generation takes 10–20 seconds for 20 questions with validation. Streaming tool use would improve perceived latency.
 
 **PDF size cap is 10 MB.** LlamaCloud's agentic parser is slow on large documents; the cap keeps p95 latency reasonable. Dense 200-page textbooks will hit content truncation at 12,000 chars.
@@ -180,6 +178,8 @@ Row-level security is enabled on all tables. The backend uses two Supabase clien
 **Image token budget.** Images exceeding `MAX_PROMPT_IMAGE_TOKENS` (20k tokens estimated) fall back to text descriptions. Token estimation is a rough pixel-area heuristic, not an exact count.
 
 **No spaced repetition scheduling.** The adaptive engine reweights question generation toward weak topics but doesn't implement a full SRS scheduler (SM-2, FSRS). `p_known` with the forgetting factor (`P_FORGET = 0.05`) is a lightweight proxy.
+
+Secrets are managed via Railway environment variables. In a team environment (or in the future) this would move to a dedicated secrets manager (Vault/OpenBao or AWS Secrets Manager) with secret rotation and audit logging — the FastAPI startup sequence would fetch secrets from the store rather than environment variables, and a compromised deploy wouldn't expose long-lived credentials.
 
 ---
 

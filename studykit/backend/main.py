@@ -405,7 +405,14 @@ class AsyncPDFProcessor:
                 expand=["markdown", "items", "images_content_metadata"],
                 output_options={"images_to_save": ["layout", "embedded"]},
             )
-            markdown = getattr(job, "markdown", "") or ""
+            raw_markdown = getattr(job, "markdown", "")
+            logger.info(f"markdown type: {type(raw_markdown)}, attrs: {dir(raw_markdown)}")
+            if hasattr(raw_markdown, "text"):
+                markdown = raw_markdown.text or ""
+            elif hasattr(raw_markdown, "__str__"):
+                markdown = str(raw_markdown) or ""
+            else:
+                markdown = ""
             items = []
             for pages in getattr(getattr(job, "items", None), "pages", []):
                 page_number = getattr(pages, "page_number", 0)

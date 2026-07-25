@@ -81,7 +81,7 @@ app.state.limiter = limiter
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://www.studykit.dev"],
+    allow_origins=["https://studykit.dev", "https://www.studykit.dev"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

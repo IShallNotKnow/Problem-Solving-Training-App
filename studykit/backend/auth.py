@@ -19,8 +19,8 @@ def get_current_user(
             audience="authenticated",
         )
         return payload
-    except JWTError:
+    except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
+            detail=f"Invalid token: {str(e)}",
         )

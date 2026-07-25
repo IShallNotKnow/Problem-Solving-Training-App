@@ -125,6 +125,7 @@ class SessionState(BaseModel):
     questions: list[Question] = Field(default_factory=list)
     history: list[QuestionResult] = Field(default_factory=list)
     chat_history: list[dict] = Field(default_factory=list)
+    created_at: datetime | None = None
 
     @property
     def current_question(self) -> Question | None:

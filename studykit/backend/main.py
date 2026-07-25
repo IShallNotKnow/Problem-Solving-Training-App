@@ -4,7 +4,6 @@ from openai import AsyncOpenAI
 from openai import RateLimitError, APIStatusError, BadRequestError
 from llama_cloud import AsyncLlamaCloud
 from dotenv import load_dotenv
-import os
 from pathlib import Path
 import asyncio
 import httpx
@@ -1171,6 +1170,7 @@ class SessionStore:
             session_id=session_id,
             label=row_res.data["label"],
             current_question_index=row_res.data["current_question_index"],
+            created_at=row_res.data["created_at"],
             topic_stats=topic_stats,
             questions=[Question(**q) for q in questions_res.data],
             chat_history=list(reversed(chat_res.data)),
@@ -1216,12 +1216,17 @@ class SessionStore:
             raise HTTPException(status_code=403, detail="Forbidden")
 
     async def create(self, session_id: UUID, label: str, user_id: UUID) -> SessionState:
-        await self.db.table("sessions").insert({
+        res = await self.db.table("sessions").insert({
             "session_id": str(session_id),
             "label": label,
             "user_id": str(user_id),
-        }).execute()
-        return SessionState(session_id=session_id, label=label)
+        }).select("*").execute()
+        row = res.data[0]
+        return SessionState(
+            session_id=UUID(row["session_id"]),
+            label=row["label"],
+            created_at=row["created_at"],
+        )
 
     async def save(self, session_id: UUID, state: SessionState) -> None:
         updates = [

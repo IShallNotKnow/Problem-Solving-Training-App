@@ -4,7 +4,6 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_key: str
     supabase_service_role_key: str
-    supabase_jwt_secret: str
     llama_cloud_api_key: str
     openai_api_key: str | None = None
     valkey_url: str

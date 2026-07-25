@@ -1526,9 +1526,9 @@ async def upload(
     if content_length and int(content_length) > MAX_PDF_SIZE:
         raise HTTPException(status_code=413, detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.")
 
-    await file.seek(0, 2)
-    real_size = file.tell()
-    await file.seek(0)
+    file.file.seek(0, 2)
+    real_size = file.file.tell()
+    file.file.seek(0)
     if real_size > MAX_PDF_SIZE:
         raise HTTPException(status_code=413, detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.")
 

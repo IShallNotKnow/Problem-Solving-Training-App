@@ -338,7 +338,7 @@ class StorageManager:
             return None
 
     async def store_images(self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]) -> list[dict]:
-        ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg", "image/tiff"}
+        ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg"}
 
         async with httpx.AsyncClient() as http_client:
             async def fetch_and_store(img: dict) -> dict | None:
@@ -504,14 +504,12 @@ class ImageFilter:
         final_images: list[dict] = []
         descriptions: dict[str, str] = {}
         semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
-        MAX_IMAGE_BYTES = 5 * 1024 * 1024
+        MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
         MAGIC_BYTES = {
             b"\x89PNG": "image/png",
             b"\xff\xd8\xff": "image/jpeg",
             b"RIFF": "image/webp",
-            b"II*\x00": "image/tiff",
-            b"MM\x00*": "image/tiff",
         }
 
         def validate_image_bytes(data: bytes) -> str | None:
@@ -533,6 +531,7 @@ class ImageFilter:
                     content_type = validate_image_bytes(content)
                     if content_type is None:
                         return None, None
+                    logger.info(f"Sending image to OpenAI: content_type={content_type}, size={len(content)} bytes")
                     base64_image = base64.b64encode(content).decode("utf-8")
                     result = await self.client.chat.completions.create(
                         model=MODEL,
@@ -568,6 +567,9 @@ class ImageFilter:
                     return None, None
                 except httpx.HTTPError as e:
                     print(f"Failed to fetch {image.get('filename')}: {e}")
+                    return None, None
+                except BadRequestError as e:
+                    logger.error(f"OpenAI BadRequestError: {e.message}, status={e.status_code}, body={e.body}")
                     return None, None
                 except Exception as e:
                     print(f"Unexpected error processing {image.get('filename')}: {e}")

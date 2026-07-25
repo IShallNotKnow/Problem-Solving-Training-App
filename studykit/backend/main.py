@@ -51,8 +51,10 @@ def estimate_tokens(bbox: dict) -> int:
     h = min(bbox["h"], 1568)
     return int((w * h) * TOKENS_PER_PIXEL)
 
-valkey_client = Valkey.from_url(os.environ.get("VALKEY_URL", "redis://localhost:6379"))
-limiter = Limiter(key_func=get_remote_address, storage_uri=os.environ.get("VALKEY_URL", "redis://localhost:6379"))
+VALKEY_URL = settings.valkey_url
+
+valkey_client = Valkey.from_url(VALKEY_URL)
+limiter = Limiter(key_func=get_remote_address, storage_uri=VALKEY_URL)
 
 # ---------------------------------------------------------------------------
 # Lifespan

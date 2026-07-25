@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str
     llama_cloud_api_key: str
     openai_api_key: str | None = None
+    valkey_url: str
+    env: str = "development"
 
     class Config:
         env_file = ".env"

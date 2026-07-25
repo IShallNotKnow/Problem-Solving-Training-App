@@ -60,6 +60,13 @@ limiter = Limiter(key_func=get_remote_address, storage_uri=os.environ.get("VALKE
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.http = httpx.AsyncClient(
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+        )
+    )
+    
     app.state.service = await acreate_client(
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY,

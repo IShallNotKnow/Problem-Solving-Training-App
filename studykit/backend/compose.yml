@@ -7,7 +7,7 @@ services:
       - "127.0.0.1:8000:8000"   # only bind to localhost — Nginx proxies in
     environment:
       - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_KEY=${SUPABASE_KEY}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLAMA_CLOUD_API_KEY=${LLAMA_CLOUD_API_KEY}

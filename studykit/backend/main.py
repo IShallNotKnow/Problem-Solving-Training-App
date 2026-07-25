@@ -65,7 +65,8 @@ async def lifespan(app: FastAPI):
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=20,
-        )
+        ),
+        timeout=httpx.Timeout(30.0),
     )
     
     app.state.service = await acreate_client(
@@ -102,9 +103,13 @@ async def get_service_supabase(request: Request) -> AsyncClient:
     return request.app.state.service
 
 async def get_user_supabase(request: Request) -> AsyncClient:
-    """Per-request anon client authenticated as the calling user. RLS fires."""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
-    client = await acreate_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+    client = await acreate_client(
+        SUPABASE_URL,
+        SUPABASE_ANON_KEY,
+        options=AsyncClientOptions(httpx_client=request.app.state.http),
+    )
     client.postgrest.auth(token)
     return client
 
@@ -1011,6 +1016,7 @@ Return your results only by calling the submit_grading tool.
                 confidence=1.0,
                 adaptation_signal=1.0 if correct else -1.0,
                 misconception=None,
+                feedback="Correct!" if correct else f"Incorrect. The correct answer is {chr(65 + question.correct_choice_index)}.",
             )
             for topic in question.topics
         ]
@@ -1631,7 +1637,7 @@ async def list_sessions(
 ):
     res = await (
         db.table("sessions")
-        .select("session_id, label, current_question_index, created_at, questions_count")
+        .select("session_id, label, current_question_index, created_at, questions_count, last_active_at")
         .order("last_active_at", desc=True)
         .execute()
     )

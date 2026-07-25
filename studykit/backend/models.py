@@ -2,7 +2,7 @@ from typing import Literal
 from enum import Enum
 from pydantic import BaseModel, model_validator, Field, field_validator
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ class SessionState(BaseModel):
     questions: list[Question] = Field(default_factory=list)
     history: list[QuestionResult] = Field(default_factory=list)
     chat_history: list[dict] = Field(default_factory=list)
-    created_at: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def current_question(self) -> Question | None:
@@ -220,8 +220,8 @@ class SessionSummary(BaseModel):
     label: str
     current_question_index: int
     questions_count: int
-    last_active_at: datetime | None
-    created_at: datetime
+    last_active_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class QuestionDTO(BaseModel):

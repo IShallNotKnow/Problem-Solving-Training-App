@@ -12,6 +12,7 @@ dependencies = [
     "openai==2.48.0",
     "llama-cloud==2.13.0",
     "supabase==2.31.0",
+    "redis==8.0.1",
     "python-jose[cryptography]==3.5.0",
     "httpx==0.28.1",
     "pydantic==2.13.4",

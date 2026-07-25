@@ -12,6 +12,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LLAMA_CLOUD_API_KEY=${LLAMA_CLOUD_API_KEY}
       - VALKEY_URL=redis://valkey:6379
+      - ENV=development
     depends_on:
       valkey:
         condition: service_healthy

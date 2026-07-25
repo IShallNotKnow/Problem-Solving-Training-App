@@ -83,6 +83,9 @@ function LoginPage() {
                         />
                     </div>
                     <Link to="/forgot-password" className="forgot">Forgot password?</Link>
+                    <button className="btn-primary" type="submit" disabled={loading}>
+                        {loading ? 'Signing in...' : 'Sign in'}
+                    </button>
                 </form>
 
                 <div className="divider">

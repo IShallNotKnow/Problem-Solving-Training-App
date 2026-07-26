@@ -584,7 +584,6 @@ class ImageFilter:
                         max_completion_tokens=500,
                         tools=[IMAGE_FILTERING_TOOL],
                         tool_choice={"type": "function", "function": {"name": "filter_images"}},
-                        temperature=0.0,
                         messages=[{
                             "role": "user",
                             "content": [
@@ -1543,19 +1542,18 @@ class SessionStore:
     ) -> None:
         logger.info(f"[session] replacing questions for session {session_id}, count={len(questions)}, generation_input_id={generation_input_id}")
         topics_covered = (
-            json.dumps(list({t for q in questions for t in q.topic_difficulties.keys()}))
+            list({t for q in questions for t in q.topic_difficulties.keys()})
             if generation_input_id is not None else None
         )
         await self.db.rpc("replace_questions_and_finalize", {
             "p_session_id": str(session_id),
-            "p_questions": json.dumps([
+            "p_questions": [
                 {**q.model_dump(), "position": i}
                 for i, q in enumerate(questions)
-            ]),
+            ],
             "p_generation_input_id": str(generation_input_id) if generation_input_id else None,
             "p_topics_covered": topics_covered,
         }).execute()
-        logger.info(f"[session] questions replaced successfully for session {session_id}")
 
     async def reset_session(self, session_id: UUID) -> None:
         logger.info(f"[session] resetting session {session_id}")

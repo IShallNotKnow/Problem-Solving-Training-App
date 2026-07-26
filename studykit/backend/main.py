@@ -746,7 +746,7 @@ Return your evaluation only by calling the validate_questions tool.
 
         message = await self.client.chat.completions.create(
             model=MODEL,
-            max_completion_tokens=2048,
+            max_completion_tokens=4096,
             tools=[QUESTION_VALIDATION_TOOL],
             tool_choice={"type": "function", "function": {"name": "validate_questions"}},
             messages=[

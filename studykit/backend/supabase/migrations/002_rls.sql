@@ -176,6 +176,18 @@ FOR SELECT TO appuser USING (
     )
 );
 
+CREATE POLICY "generation_inputs_insert_own"
+ON generation_inputs
+FOR INSERT
+TO appuser
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM sessions
+        WHERE sessions.session_id = generation_inputs.session_id
+        AND sessions.user_id = auth.uid()
+    )
+);
+
 CREATE POLICY "generation_inputs_update_service" ON generation_inputs
 FOR UPDATE TO service_role USING (true) WITH CHECK (true);
 
@@ -214,20 +226,23 @@ FOR SELECT TO appuser USING (
     )
 );
 
-CREATE POLICY "generation_inputs_insert_own"
-ON generation_inputs
+CREATE POLICY "generation_images_insert_own"
+ON generation_images
 FOR INSERT
 TO appuser
 WITH CHECK (
     EXISTS (
-        SELECT 1 FROM sessions
-        WHERE sessions.session_id = generation_inputs.session_id
+        SELECT 1 FROM generation_inputs
+        JOIN sessions ON sessions.session_id = generation_inputs.session_id
+        WHERE generation_inputs.generation_input_id = generation_images.generation_input_id
         AND sessions.user_id = auth.uid()
     )
 );
 
+
 CREATE POLICY "generation_images_insert_service" ON generation_images
 FOR INSERT TO service_role WITH CHECK (true);
+
 
 -- users
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;

@@ -47,7 +47,7 @@ BEGIN
     INSERT INTO questions (
         session_id, question_id, position, question_type, prompt,
         choices, correct_choice_index, correct_answer, rubric_points,
-        explanation, topics, topic_difficulties
+        explanation, topic_difficulties
     )
     SELECT
         p_session_id,
@@ -60,7 +60,6 @@ BEGIN
         q->>'correct_answer',
         (q->'rubric_points')::jsonb,
         q->>'explanation',
-        (q->'topics')::jsonb,
         (q->'topic_difficulties')::jsonb
     FROM jsonb_array_elements(p_questions) AS q;
 

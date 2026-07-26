@@ -192,6 +192,14 @@ export default function StudyPage() {
         if (!currentQuestion) return;
 
         const isMCQ = currentQuestion.question_type === 'MCQ';
+        if (isMCQ) {
+            const choiceLetter = String.fromCharCode(65 + choiceIndex);
+            const choiceText = currentQuestion.choices[choiceIndex];
+            setMessages(prev => [...prev, {
+                role: 'user',
+                content: `${choiceLetter}. ${choiceText}`,
+            }]);
+        }
 
         if (!isMCQ) {
             setMessages(prev => [...prev, {

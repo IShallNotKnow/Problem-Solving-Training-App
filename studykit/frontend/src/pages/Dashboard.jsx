@@ -148,8 +148,8 @@ export default function Dashboard() {
                         <p className="dash-empty-title">No sessions yet</p>
                         <p className="dash-empty-sub">Upload slides or paste notes to generate your first study set.</p>
                         <button className="dash-new-btn" onClick={handleNewSession}>
-                            <FiPlus size={15} />
-                            Start studying
+                            <FiPlus />
+                            <span>Start studying</span>
                         </button>
                     </div>
                 ) : (

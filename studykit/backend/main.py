@@ -581,7 +581,7 @@ class ImageFilter:
                     base64_image = base64.b64encode(content).decode("utf-8")
                     result = await self.client.chat.completions.create(
                         model=MODEL,
-                        max_completion_tokens=500,
+                        max_completion_tokens=1000,
                         tools=[IMAGE_FILTERING_TOOL],
                         tool_choice={"type": "function", "function": {"name": "filter_images"}},
                         messages=[{

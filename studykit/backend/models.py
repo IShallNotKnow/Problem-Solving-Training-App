@@ -20,7 +20,7 @@ class GenerationStatus(str, Enum):
 class Question(BaseModel):
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
-    topic_difficulties: dict[str, int] #changes need to percolate down
+    topic_difficulties: dict[str, int]
     prompt: str
     correct_answer: str
     explanation: str
@@ -40,7 +40,7 @@ class Question(BaseModel):
     def validate_question_type(self) -> "Question":
         if not self.topic_difficulties:
             raise ValueError(f"{self.question_id}: topic_difficulties must not be empty")
-    
+
         for topic, difficulty in self.topic_difficulties.items():
             if not (300 <= difficulty <= 3000):
                 raise ValueError(f"{self.question_id}: difficulty for topic '{topic}' must be between 300 and 3000")
@@ -55,15 +55,17 @@ class Question(BaseModel):
             if self.choices:
                 raise ValueError(f"{self.question_id}: FRQ should not have choices")
         return self
-    
+
+
 class TopicResult(BaseModel):
     topic: str
     score: float
     correct: bool
-    feedback: str
-    confidence: float
-    adaptation_signal: float
+    feedback: str = ""
+    confidence: float = 1.0
+    adaptation_signal: float = 0.0
     misconception: str | None = None
+
 
 class TopicUpdate(BaseModel):
     topic: str
@@ -72,7 +74,8 @@ class TopicUpdate(BaseModel):
     elo_delta: float
     previous_p_known: float
     new_p_known: float
-    reason: str
+    reason: str = ""
+
 
 class QuestionResult(BaseModel):
     question_id: str
@@ -103,7 +106,7 @@ class TopicEvidence(BaseModel):
     elo_delta: float
     p_obs: float
     adaptation_signal: float
-    misconception: str | None
+    misconception: str | None = None
 
 
 class AnswerValidationResult(BaseModel):
@@ -125,14 +128,14 @@ class SessionState(BaseModel):
     questions: list[Question] = Field(default_factory=list)
     history: list[QuestionResult] = Field(default_factory=list)
     chat_history: list[dict] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime | None = None
 
     @property
     def current_question(self) -> Question | None:
         if 0 <= self.current_question_index < len(self.questions):
             return self.questions[self.current_question_index]
         return None
-    
+
     @property
     def questions_count(self) -> int:
         return len(self.questions) if self.questions else 0
@@ -218,10 +221,10 @@ class UploadResponse(BaseModel):
 class SessionSummary(BaseModel):
     session_id: UUID
     label: str
-    current_question_index: int
-    questions_count: int
-    last_active_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    current_question_index: int = 0
+    questions_count: int = 0
+    last_active_at: datetime | None = None
+    created_at: datetime | None = None
 
 
 class QuestionDTO(BaseModel):
@@ -243,10 +246,11 @@ class SessionStateDTO(BaseModel):
     session_id: UUID
     label: str
     current_question_index: int = 0
-    topic_stats: dict[str, TopicStats]
-    questions: list[QuestionDTO]
-    history: list[QuestionResult]
-    chat_history: list[dict]
+    topic_stats: dict[str, TopicStats] = Field(default_factory=dict)
+    questions: list[QuestionDTO] = Field(default_factory=list)
+    history: list[QuestionResult] = Field(default_factory=list)
+    chat_history: list[dict] = Field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -328,8 +332,10 @@ QUESTION_GENERATION_TOOL = {
                             "explanation": {
                                 "type": "string",
                                 "description": (
-                                    "1-2 sentences on why the correct answer "
-                                    "is right, shown after grading."
+                                    "Required. 1-2 sentences shown to the student after "
+                                    "grading explaining why the correct answer is right. "
+                                    "For MCQ also explain why the distractors are wrong. "
+                                    "For FRQ summarise the key insight a correct answer must show."
                                 )
                             }
                         },
@@ -339,7 +345,10 @@ QUESTION_GENERATION_TOOL = {
                             "topic_difficulties",
                             "prompt",
                             "correct_answer",
-                            "explanation"
+                            "explanation",
+                            "choices",
+                            "correct_choice_index",
+                            "rubric_points",
                         ],
                         "additionalProperties": False
                     }
@@ -349,12 +358,13 @@ QUESTION_GENERATION_TOOL = {
             "additionalProperties": False
         }
     }
-    }
+}
 
 QUESTION_VALIDATION_TOOL = {
     "type": "function",
     "function": {
         "name": "validate_questions",
+        "strict": True,
         "description": "Review a batch of generated questions for correctness, difficulty accuracy, and quality.",
         "parameters": {
             "type": "object",
@@ -403,6 +413,7 @@ ANSWER_VALIDATION_TOOL = {
     "type": "function",
     "function": {
         "name": "submit_grading",
+        "strict": True,
         "description": "Submit graded results for each student response.",
         "parameters": {
             "type": "object",
@@ -426,15 +437,11 @@ ANSWER_VALIDATION_TOOL = {
                             },
                             "correct": {
                                 "type": "boolean",
-                                "description": (
-                                    "True only if score >= 0.85"
-                                ),
+                                "description": "True only if score >= 0.85",
                             },
                             "feedback": {
                                 "type": "string",
-                                "description": (
-                                    "1-3 sentences specific to what the student wrote."
-                                ),
+                                "description": "1-3 sentences specific to what the student wrote.",
                             },
                             "misconception": {
                                 "type": ["string", "null"],
@@ -447,9 +454,8 @@ ANSWER_VALIDATION_TOOL = {
                                 "type": "array",
                                 "minItems": 1,
                                 "description": (
-                                    "Per-topic breakdown for questions covering "
-                                    "multiple concepts. Required when the question "
-                                    "has more than one topic."
+                                    "Per-topic breakdown. One entry per topic in "
+                                    "topic_difficulties. Required for all questions."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -463,8 +469,7 @@ ANSWER_VALIDATION_TOOL = {
                                             "maximum": 1.0,
                                             "description": (
                                                 "0.0 to 1.0 — how well the student "
-                                                "demonstrated understanding of this "
-                                                "specific topic."
+                                                "demonstrated understanding of this topic."
                                             ),
                                         },
                                         "correct": {
@@ -474,21 +479,17 @@ ANSWER_VALIDATION_TOOL = {
                                             "type": "number",
                                             "minimum": 0.0,
                                             "maximum": 1.0,
-                                            "description": (
-                                                "0.0 to 1.0 — confidence in this "
-                                                "topic assessment."
-                                            ),
+                                            "description": "0.0 to 1.0 — confidence in this topic assessment.",
                                         },
                                         "adaptation_signal": {
                                             "type": "number",
                                             "minimum": -1.0,
                                             "maximum": 1.0,
                                             "description": (
-                                                "Directional evidence for difficulty "
-                                                "adjustment. -1.0 means well below the "
-                                                "current difficulty, 0.0 means expected "
-                                                "performance, and +1.0 means well above "
-                                                "the current difficulty."
+                                                "Directional evidence for difficulty adjustment. "
+                                                "-1.0 means well below current difficulty, "
+                                                "0.0 means expected performance, "
+                                                "+1.0 means well above current difficulty."
                                             ),
                                         },
                                         "misconception": {
@@ -500,10 +501,7 @@ ANSWER_VALIDATION_TOOL = {
                                         },
                                         "feedback": {
                                             "type": "string",
-                                            "description": (
-                                                "What specifically went wrong or right "
-                                                "on this concept."
-                                            ),
+                                            "description": "What specifically went wrong or right on this concept.",
                                         },
                                     },
                                     "required": [
@@ -541,6 +539,7 @@ IMAGE_FILTERING_TOOL = {
     "type": "function",
     "function": {
         "name": "filter_images",
+        "strict": True,
         "description": "Semantically filter images based on their relation to a lecture PDF.",
         "parameters": {
             "type": "object",
@@ -573,9 +572,7 @@ IMAGE_FILTERING_TOOL = {
                     },
                 }
             },
-            "required": [
-                "filtered_images",
-            ],
+            "required": ["filtered_images"],
             "additionalProperties": False,
         },
     },

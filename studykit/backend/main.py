@@ -1,36 +1,59 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
-from openai import AsyncOpenAI
-from openai import RateLimitError, APIStatusError, BadRequestError
-from llama_cloud import AsyncLlamaCloud
-from dotenv import load_dotenv
-from pathlib import Path
 import asyncio
-import httpx
 import base64
 import json
-from valkey import Valkey
-from pydantic import ValidationError
-from uuid import UUID, uuid4
-from supabase import acreate_client, AsyncClient, AsyncClientOptions
+import logging
+import re
+import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
+from uuid import UUID, uuid4
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from llama_cloud import AsyncLlamaCloud
+from openai import APIStatusError, AsyncOpenAI, BadRequestError, RateLimitError
+from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-import re
-from fastapi.responses import JSONResponse
-import traceback
-import logging
-from datetime import datetime, timezone
+from valkey import Valkey
+
 from auth import get_current_user
 from config import settings
 from models import (
-    Question, QuestionResult, QuestionValidationResult, GenerationResult, GenerationStatus, GenerateRequest,
-    SessionState, SessionContext, SessionSummary, AnswerResponse, AnswerRequest, AnswerValidationResult,
-    TopicStats, TopicResult, TopicEvidence, TopicUpdate, UploadResponse, ChatRequest, ChatResponse,
-    QuestionDTO, GenerationResultDTO, SessionStateDTO, CreateSessionRequest,
-    IMAGE_FILTERING_TOOL, ANSWER_VALIDATION_TOOL, QUESTION_VALIDATION_TOOL, QUESTION_GENERATION_TOOL
+    ANSWER_VALIDATION_TOOL,
+    IMAGE_FILTERING_TOOL,
+    QUESTION_GENERATION_TOOL,
+    QUESTION_VALIDATION_TOOL,
+    AnswerRequest,
+    AnswerResponse,
+    AnswerValidationResult,
+    ChatRequest,
+    ChatResponse,
+    CreateSessionRequest,
+    GenerateRequest,
+    GenerationResult,
+    GenerationResultDTO,
+    GenerationStatus,
+    Question,
+    QuestionDTO,
+    QuestionResult,
+    QuestionValidationResult,
+    SessionContext,
+    SessionState,
+    SessionStateDTO,
+    SessionSummary,
+    TopicEvidence,
+    TopicResult,
+    TopicStats,
+    TopicUpdate,
+    UploadResponse,
 )
+from supabase import AsyncClient, AsyncClientOptions, acreate_client
 
 load_dotenv()
 
@@ -436,7 +459,7 @@ class AsyncPDFProcessor:
                 expand=["markdown", "items", "images_content_metadata"],
                 output_options={"images_to_save": ["layout", "embedded"]},
             )
-            logger.info(f"[pdf] parsing complete")
+            logger.info("[pdf] parsing complete")
             raw_markdown = getattr(job, "markdown", "")
             logger.info(f"[pdf] markdown type: {type(raw_markdown)}, attrs: {dir(raw_markdown)}")
             if hasattr(raw_markdown, "text"):

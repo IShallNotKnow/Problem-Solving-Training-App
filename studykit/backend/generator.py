@@ -1,14 +1,19 @@
 import logging
 from uuid import UUID
+
+from arq.connections import RedisSettings
 from openai import AsyncOpenAI
 from supabase._async.client import AsyncClient, create_async_client
-from arq.connections import RedisSettings
+
 from config import settings
-from models import QuestionDTO
 from main import (
-    SessionStore, SessionNotFoundError, DatabaseError,
-    StorageManager, QuestionGenerator
+    DatabaseError,
+    QuestionGenerator,
+    SessionNotFoundError,
+    SessionStore,
+    StorageManager,
 )
+from models import QuestionDTO
 
 logger = logging.getLogger(__name__)
 

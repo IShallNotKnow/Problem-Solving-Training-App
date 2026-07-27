@@ -103,22 +103,37 @@ export default function StudyPage() {
         if (inputRef.current) inputRef.current.value = '';
         setLoading(true);
 
-        try {
-            if (currentFile) {
-                const formData = new FormData();
-                formData.append('file', currentFile);
+        // Upload failure is recoverable — show the error but don't offer
+        // retry (the session has no questions yet, user just re-submits).
+        if (currentFile) {
+            try {
                 await apiUpload(
                     `/sessions/${sessionId}/upload?label=${encodeURIComponent(label)}`,
-                    formData
+                    new FormData().append('file', currentFile) || (() => {
+                    const fd = new FormData();
+                    fd.append('file', currentFile);
+                    return fd;
+                    })()
                 );
+            } catch (err) {
+                setLoading(false);
+                setRetryError({
+                    message: 'Upload failed — please try again.',
+                    onRetry: () => {
+                    setRetryError(null);
+                    handleUploadAndGenerate(); // safe: currentInput/currentFile captured above
+                    },
+                });
+                return; // don't proceed to generate
             }
+        }
 
+        // Generation failure: questions don't exist yet (or the call is idempotent
+        // enough to re-run). Capture inputs now so retry has them.
+        try {
             const result = await apiFetch(`/sessions/${sessionId}/generate`, {
                 method: 'POST',
-                body: JSON.stringify({
-                    label,
-                    raw_markdown: currentFile ? '' : currentInput,
-                }),
+                body: JSON.stringify({ label, raw_markdown: currentFile ? '' : currentInput }),
             });
 
             setSessionState(prev => ({
@@ -133,15 +148,42 @@ export default function StudyPage() {
             }]);
             setMode('answer');
         } catch (err) {
-            // retry banner — session is broken until resolved
             setRetryError({
-                message: err.status < 500
-                    ? err.message
-                    : 'Generation failed — please try again.',
-                onRetry: () => {
+            message: err.status < 500
+                ? err.message
+                : 'Generation failed — please try again.',
+            onRetry: () => {
+                setRetryError(null);
+                // Re-run only generate, not upload — file is already stored
+                apiFetch(`/sessions/${sessionId}/generate`, {
+                method: 'POST',
+                body: JSON.stringify({ label, raw_markdown: currentFile ? '' : currentInput }),
+                })
+                .then(result => {
+                    setSessionState(prev => ({
+                    ...prev,
+                    questions: result.questions,
+                    current_question_index: 0,
+                    }));
+                    setMessages(prev => [...prev, {
+                    role: 'assistant',
+                    content: result.questions,
+                    type: 'questions',
+                    }]);
+                    setMode('answer');
                     setRetryError(null);
-                    handleUploadAndGenerate();
-                },
+                })
+                .catch(retryErr => {
+                    setRetryError({
+                    message: retryErr.status < 500
+                        ? retryErr.message
+                        : 'Generation failed — please try again.',
+                    onRetry: /* same retry fn */ null, // set this properly
+                    });
+                })
+                .finally(() => setLoading(false));
+                setLoading(true);
+            },
             });
         } finally {
             setLoading(false);

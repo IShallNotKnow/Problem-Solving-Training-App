@@ -103,38 +103,37 @@ export default function StudyPage() {
         if (inputRef.current) inputRef.current.value = '';
         setLoading(true);
 
-        // Upload failure is recoverable — show the error but don't offer
-        // retry (the session has no questions yet, user just re-submits).
         if (currentFile) {
             try {
+                const formData = new FormData();
+                formData.append('file', currentFile);
                 await apiUpload(
                     `/sessions/${sessionId}/upload?label=${encodeURIComponent(label)}`,
-                    new FormData().append('file', currentFile) || (() => {
-                    const fd = new FormData();
-                    fd.append('file', currentFile);
-                    return fd;
-                    })()
+                    formData
                 );
             } catch (err) {
                 setLoading(false);
                 setRetryError({
                     message: 'Upload failed — please try again.',
-                    onRetry: () => {
-                    setRetryError(null);
-                    handleUploadAndGenerate(); // safe: currentInput/currentFile captured above
-                    },
+                    onRetry: () => { setRetryError(null); handleUploadAndGenerate(); },
                 });
-                return; // don't proceed to generate
+                return;
             }
         }
 
-        // Generation failure: questions don't exist yet (or the call is idempotent
-        // enough to re-run). Capture inputs now so retry has them.
+        // captured in closure so retry can call without re-uploading
+        await handleGenerateAndPoll(sessionId, label, currentFile ? '' : currentInput);
+    };
+
+    const handleGenerateAndPoll = async (sessionId, label, rawMarkdown) => {
+        setLoading(true);
         try {
-            const result = await apiFetch(`/sessions/${sessionId}/generate`, {
+            const { job_id } = await apiFetch(`/sessions/${sessionId}/generate`, {
                 method: 'POST',
-                body: JSON.stringify({ label, raw_markdown: currentFile ? '' : currentInput }),
+                body: JSON.stringify({ label, raw_markdown: rawMarkdown }),
             });
+
+            const result = await pollGeneration(sessionId, job_id);
 
             setSessionState(prev => ({
                 ...prev,
@@ -147,49 +146,36 @@ export default function StudyPage() {
                 type: 'questions',
             }]);
             setMode('answer');
+            setRetryError(null);
         } catch (err) {
             setRetryError({
-            message: err.status < 500
-                ? err.message
-                : 'Generation failed — please try again.',
-            onRetry: () => {
-                setRetryError(null);
-                // Re-run only generate, not upload — file is already stored
-                apiFetch(`/sessions/${sessionId}/generate`, {
-                method: 'POST',
-                body: JSON.stringify({ label, raw_markdown: currentFile ? '' : currentInput }),
-                })
-                .then(result => {
-                    setSessionState(prev => ({
-                    ...prev,
-                    questions: result.questions,
-                    current_question_index: 0,
-                    }));
-                    setMessages(prev => [...prev, {
-                    role: 'assistant',
-                    content: result.questions,
-                    type: 'questions',
-                    }]);
-                    setMode('answer');
+                message: err.status < 500
+                    ? err.message
+                    : 'Generation failed — please try again.',
+                onRetry: () => {
                     setRetryError(null);
-                })
-                .catch(retryErr => {
-                    setRetryError({
-                    message: retryErr.status < 500
-                        ? retryErr.message
-                        : 'Generation failed — please try again.',
-                    onRetry: /* same retry fn */ null, // set this properly
-                    });
-                })
-                .finally(() => setLoading(false));
-                setLoading(true);
-            },
+                    handleGenerateAndPoll(sessionId, label, rawMarkdown);
+                },
             });
         } finally {
             setLoading(false);
             scrollToBottom();
         }
     };
+
+    async function pollGeneration(sessionId, jobId, intervalMs = 2000, maxWaitMs = 120000) {
+        const deadline = Date.now() + maxWaitMs;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, intervalMs));
+            const data = await apiFetch(`/sessions/${sessionId}/generate/${jobId}`);
+
+            if (data.status === 'generated') return data;           // GenerationResultDTO
+            if (data.status === 'failed_validation') return data;   // has questions, but flagged
+            if (data.status === 'error') throw new Error(data.message || 'Generation failed');
+            // 'pending' or 'in_progress' → keep polling
+        }
+        throw new Error('Generation timed out — please try again.');
+    }
 
     // ── reset + regenerate ────────────────────────────────────
     const handleReset = async () => {

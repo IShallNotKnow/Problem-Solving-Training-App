@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from openai import RateLimitError, APIStatusError, BadRequestError
@@ -9,6 +9,7 @@ import asyncio
 import httpx
 import base64
 import json
+from valkey import Valkey
 from pydantic import ValidationError
 from uuid import UUID, uuid4
 from supabase import acreate_client, AsyncClient, AsyncClientOptions
@@ -16,7 +17,6 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from valkey import Valkey
 import re
 from fastapi.responses import JSONResponse
 import traceback
@@ -50,8 +50,8 @@ def estimate_tokens(bbox: dict) -> int:
     h = min(bbox["h"], 1568)
     return int((w * h) * TOKENS_PER_PIXEL)
 
-VALKEY_URL = settings.valkey_url
 
+VALKEY_URL = settings.valkey_url
 valkey_client = Valkey.from_url(VALKEY_URL)
 limiter = Limiter(key_func=get_remote_address, storage_uri=VALKEY_URL)
 
@@ -95,6 +95,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -1724,56 +1725,63 @@ async def reset_session(
     )
 
 
-@app.post("/sessions/{session_id}/generate", response_model=GenerationResultDTO)
+@app.post("/sessions/{session_id}/generate", status_code=202)
 @limiter.limit("2/minute")
 async def generate(
     request: Request,
     session_id: UUID,
     req: GenerateRequest,
     user=Depends(get_current_user),
-    question_generator: QuestionGenerator = Depends(get_question_generator),
     session_store: SessionStore = Depends(get_session_store),
-    storage_manager: StorageManager = Depends(get_storage_manager),
 ):
-    logger.info(f"[endpoint] POST /sessions/{session_id}/generate user={user['sub']} label='{req.label}'")
+    
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
-    try:
-        state = await session_store.get(session_id)
-    except SessionNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    except DatabaseError:
-        raise HTTPException(status_code=503, detail="Database unavailable, please retry")
+    jwt = request.headers.get("Authorization", "").removeprefix("Bearer ")
 
-    profile = await session_store.get_relevant_profile(session_id, state)
-    raw_images = await storage_manager.list_images(session_id)
-    upload_context = await session_store.get_upload_context(session_id)
-
-    if upload_context is None and not req.raw_markdown:
-        raise HTTPException(status_code=400, detail="No upload context found for this session")
-    content = upload_context["content"] if upload_context else req.raw_markdown
-    logger.info(f"[endpoint] generate using {'upload context' if upload_context else 'raw markdown'}, content={len(content)} chars")
-
-    result = await question_generator.generate_questions(content, raw_images, storage_manager, session_id, profile)
-
-    if not result.questions:
-        raise HTTPException(
-            status_code=422,
-            detail="No questions could be generated from this content — try uploading different material.",
-        )
-
-    await session_store.replace_questions_and_finalize(
-        session_id=session_id,
-        questions=result.questions,
-        generation_input_id=upload_context["generation_input_id"] if upload_context else None,
+    await app.state.arq.enqueue_job(
+        "generate_questions_task",
+        session_id,
+        {
+            "jwt": jwt,
+            "user_id": user["sub"],
+            "raw_markdown": req.raw_markdown,
+            "label": req.label,
+        },
+        _job_id=f"generate:{session_id}",
     )
-    logger.info(f"[endpoint] generate complete for session {session_id}: {len(result.questions)} questions, status={result.status}")
 
-    return GenerationResultDTO(
-        status=result.status,
-        questions=[QuestionDTO.model_validate(q, from_attributes=True) for q in result.questions],
-        validation=result.validation,
-        message=result.message,
+    return {"job_id": f"generate:{session_id}", "status": "pending"}
+
+
+@app.get("/sessions/{session_id}/generate/{job_id}", response_model=GenerationResultDTO)
+async def generation_status(
+    session_id: UUID,
+    job_id: str,
+    user=Depends(get_current_user),
+    session_store: SessionStore = Depends(get_session_store),
+):
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
+
+    job = await app.state.arq.job(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found or expired")
+    
+    status = await job.status()
+
+    if status == "complete":
+        result = await job.result()
+        if isinstance(result, Exception):
+            raise HTTPException(500, str(result))
+        return GenerationResultDTO(**result)
+
+    if status == "not_found":
+        raise HTTPException(404, "Job not found or expired")
+
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": job_id, "status": status},
     )
+
 
 
 @app.get("/sessions", response_model=list[SessionSummary])

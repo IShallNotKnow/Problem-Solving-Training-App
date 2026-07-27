@@ -1,26 +1,48 @@
-# docker-compose.yml (sits next to Dockerfile in backend/)
+x-common-env: &common-env
+  SUPABASE_URL: ${SUPABASE_URL}
+  SUPABASE_KEY: ${SUPABASE_KEY}
+  SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  LLAMA_CLOUD_API_KEY: ${LLAMA_CLOUD_API_KEY}
+  VALKEY_URL: redis://valkey:6379
+  ENV: development
+
+x-common-service: &common-service
+  build: .
+  restart: unless-stopped
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
   api:
-    build: .
-    restart: unless-stopped
+    <<: *common-service
     ports:
-      - "127.0.0.1:8000:8000"   # only bind to localhost — Nginx proxies in
-    environment:
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - LLAMA_CLOUD_API_KEY=${LLAMA_CLOUD_API_KEY}
-      - VALKEY_URL=redis://valkey:6379
-      - ENV=development
+      - "127.0.0.1:8000:8000"
+    environment: *common-env
     depends_on:
       valkey:
         condition: service_healthy
 
+  worker:
+    <<: *common-service
+    command: arq worker.WorkerSettings
+    environment: *common-env
+    depends_on:
+      valkey:
+        condition: service_healthy
+    stop_grace_period: 30s
+
   valkey:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:6.1.1-alpine
     restart: unless-stopped
-    # no ports exposed — only reachable inside the docker network
+    command:
+      - valkey-server
+      - --appendonly
+      - "yes"
     volumes:
       - valkey_data:/data
     healthcheck:
@@ -28,6 +50,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   valkey_data:

@@ -129,9 +129,24 @@ on storage.objects for select
 to service_role
 using (bucket_id = 'generation-images');
 
--- questions update (service_role only — backend updates topic_difficulties)
-CREATE POLICY "questions_update_service" ON questions
-FOR UPDATE TO service_role USING (true) WITH CHECK (true);
+-- questions
+CREATE POLICY "questions_insert_service" ON questions
+FOR INSERT TO appuser WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM sessions
+        WHERE sessions.session_id = topic_stats.session_id
+        AND sessions.user_id = auth.uid()
+    )
+);
+
+CREATE POLICY "questions_delete_service" ON questions
+FOR DELETE TO appuser USING (
+    EXISTS (
+        SELECT 1 FROM sessions
+        WHERE sessions.session_id = chat_messages.session_id
+        AND sessions.user_id = auth.uid()
+    )
+);
 
 -- topic_stats
 ALTER TABLE topic_stats ENABLE ROW LEVEL SECURITY;

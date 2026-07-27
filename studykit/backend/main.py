@@ -1545,8 +1545,13 @@ class SessionStore:
         logger.info(f"[session] replacing questions for session {session_id}, count={len(questions)}, generation_input_id={generation_input_id}")
         
         topics_covered = (
-            {t: d for q in questions for t, d in q.topic_difficulties.items()}
-            if generation_input_id is not None else None
+            list({
+                t
+                for q in questions
+                for t in q.topic_difficulties
+            })
+            if generation_input_id is not None
+            else None
         )
         
         await self.db.rpc("replace_questions_and_finalize", {

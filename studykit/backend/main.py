@@ -57,6 +57,8 @@ from processing import (
 from session_store import SessionStore
 from storage import StorageManager
 from supabase import AsyncClient, AsyncClientOptions, acreate_client
+from arq import create_pool
+from generator import REDIS_SETTINGS
 
 load_dotenv()
 
@@ -92,9 +94,14 @@ async def lifespan(app: FastAPI):
         SUPABASE_SERVICE_ROLE_KEY,
         options=AsyncClientOptions(httpx_client=app.state.http),
     )
+
+    app.state.arq = await create_pool(REDIS_SETTINGS)
     logger.info("Startup complete")
     yield
     logger.info("Shutting down — closing HTTP pool")
+
+    await app.state.arq.close()
+    await app.state.http.aclose()
 
 
 app = FastAPI(lifespan=lifespan)

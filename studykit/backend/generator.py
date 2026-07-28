@@ -65,9 +65,6 @@ async def generate_questions_task(ctx, session_id: UUID, job: dict):
     raw_images = await storage_manager.list_images(session_id)
     upload_context = await session_store.get_upload_context(session_id)
 
-    questions = await question_generator.generate_questions(session_store, session_id, job)
-    await session_store.replace_questions_and_finalize(session_id, questions)
-
     if upload_context is None and not job.get("raw_markdown"):
         raise ValueError("No upload context found and no markdown provided")
 

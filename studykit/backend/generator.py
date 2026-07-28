@@ -3,7 +3,7 @@ from uuid import UUID
 
 from arq.connections import RedisSettings
 from openai import AsyncOpenAI
-from supabase._async.client import AsyncClient, create_async_client
+from supabase import AsyncClient, acreate_client
 
 from config import settings
 from exceptions import DatabaseError, SessionNotFoundError
@@ -18,7 +18,7 @@ REDIS_SETTINGS = RedisSettings(host="valkey", port=6379)
 
 
 async def _build_user_client(jwt: str) -> AsyncClient:
-    client = await create_async_client(
+    client = await acreate_client(
         settings.supabase_url,
         settings.supabase_anon_key,
     )
@@ -28,7 +28,7 @@ async def _build_user_client(jwt: str) -> AsyncClient:
 
 async def startup(ctx):
     # service client has no JWT dependency — safe to build once at startup
-    service_db = await create_async_client(
+    service_db = await acreate_client(
         settings.supabase_url,
         settings.supabase_service_key,
     )

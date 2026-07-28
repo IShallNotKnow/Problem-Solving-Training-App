@@ -1,33 +1,4 @@
-/* ─── tokens ─────────────────────────────────────────────── */
-:root {
-    --bg:           #0e0e11;
-    --surface:      #17171c;
-    --surface-2:    #1f1f27;
-    --border:       #2a2a35;
-    --text:         #e8e8f0;
-    --text-muted:   #6b6b80;
-    --text-faint:   #3d3d50;
-    --accent:       #7b6ef6;
-    --accent-dim:   #7b6ef620;
-    --accent-hover: #9183f8;
-    --danger:       #e05252;
-    --danger-dim:   #e0525215;
-    --radius:       12px;
-    --radius-sm:    8px;
-    --transition:   0.15s ease;
-}
-
-[data-theme='light'] {
-    --bg:           #f4f4f8;
-    --surface:      #ffffff;
-    --surface-2:    #f0f0f5;
-    --border:       #e0e0ea;
-    --text:         #1a1a2e;
-    --text-muted:   #6b6b80;
-    --text-faint:   #c0c0d0;
-    --accent-dim:   #7b6ef615;
-    --danger-dim:   #e0525210;
-}
+/* ─── tokens live in src/styles/theme.css ────────────────── */
 
 /* ─── layout ─────────────────────────────────────────────── */
 .dash-wrap {

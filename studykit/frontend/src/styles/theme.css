@@ -1,0 +1,299 @@
+/* ===========================================================================
+   studykit design tokens — single source of truth.
+
+   Previously Dashboard.css, HomePage.css and LoginPage.css each declared their
+   own `:root` block for the same token names, so the active palette depended
+   on CSS import order and light mode inherited a mix of two palettes. All
+   tokens now live here, keyed on [data-theme], which ThemeContext sets on
+   <html>.
+   =========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+    /* surfaces */
+    --bg: #ffffff;
+    --bg-surface: #f5f5f5;
+    --bg-card: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f0f0f5;
+
+    /* borders */
+    --border: rgba(0, 0, 0, 0.1);
+    --border-mid: rgba(0, 0, 0, 0.18);
+
+    /* text */
+    --text-primary: #1a1a1a;
+    --text-secondary: #6a6a75;
+    --text-muted: #8a8a95;
+    --text-faint: #c0c0d0;
+    --text: #1a1a1a;
+
+    /* brand / accent — one blue family across every page */
+    --accent: #185fa5;
+    --accent-soft: #378add;
+    --accent-bg: #e6f1fb;
+    --accent-text: #0c447c;
+    --accent-dim: rgba(24, 95, 165, 0.1);
+    --accent-hover: #1d74c9;
+    --brand: #0c447c;
+
+    /* marketing split-panel */
+    --panel-bg: #0c447c;
+    --panel-brand: #b5d4f4;
+    --panel-title: #e6f1fb;
+    --panel-sub: #378add;
+
+    /* status */
+    --danger: #d14343;
+    --danger-dim: rgba(209, 67, 67, 0.1);
+    --success: #1a7f52;
+    --success-dim: rgba(26, 127, 82, 0.1);
+    --warning: #b06f10;
+    --warning-dim: rgba(176, 111, 16, 0.1);
+
+    /* shape + motion */
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-lg: 16px;
+    --transition: 0.15s ease;
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+    --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+    --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+
+    /* type */
+    --font-sans: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-serif: 'DM Serif Display', Georgia, serif;
+
+    color-scheme: light;
+}
+
+[data-theme='dark'] {
+    --bg: #0f1117;
+    --bg-surface: #181c27;
+    --bg-card: #181c27;
+    --surface: #17171c;
+    --surface-2: #1f1f27;
+
+    --border: rgba(255, 255, 255, 0.08);
+    --border-mid: rgba(255, 255, 255, 0.15);
+
+    --text-primary: #f0f0f0;
+    --text-secondary: #9a9aa5;
+    --text-muted: #6b6b80;
+    --text-faint: #3d3d50;
+    --text: #f0f0f0;
+
+    --accent: #378add;
+    --accent-soft: #5aa3e8;
+    --accent-bg: rgba(55, 138, 221, 0.15);
+    --accent-text: #85b7eb;
+    --accent-dim: rgba(55, 138, 221, 0.14);
+    --accent-hover: #5aa3e8;
+    --brand: #85b7eb;
+
+    --panel-bg: #0a0f1a;
+    --panel-brand: #85b7eb;
+    --panel-title: #e0eaf5;
+    --panel-sub: #378add;
+
+    --danger: #e05252;
+    --danger-dim: rgba(224, 82, 82, 0.15);
+    --success: #45c08a;
+    --success-dim: rgba(69, 192, 138, 0.15);
+    --warning: #e0a94a;
+    --warning-dim: rgba(224, 169, 74, 0.15);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+
+    color-scheme: dark;
+}
+
+/* Respect the OS preference on first paint, before ThemeContext sets
+   data-theme, so there is no light-to-dark flash. */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+        --bg: #0f1117;
+        --bg-surface: #181c27;
+        --bg-card: #181c27;
+        --surface: #17171c;
+        --surface-2: #1f1f27;
+        --border: rgba(255, 255, 255, 0.08);
+        --border-mid: rgba(255, 255, 255, 0.15);
+        --text-primary: #f0f0f0;
+        --text-secondary: #9a9aa5;
+        --text-muted: #6b6b80;
+        --text-faint: #3d3d50;
+        --text: #f0f0f0;
+        --accent: #378add;
+        --accent-text: #85b7eb;
+        --brand: #85b7eb;
+        color-scheme: dark;
+    }
+}
+
+/* ─── base ──────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+/* Theme switches should feel deliberate, not jarring. */
+body,
+.hp,
+.dash-wrap,
+.sp-wrap,
+.login-wrap {
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Consistent, visible keyboard focus across the whole app. */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent-soft);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+
+::selection {
+    background: var(--accent-bg);
+    color: var(--accent-text);
+}
+
+/* Scrollbars that match the active theme instead of the OS default. */
+* {
+    scrollbar-color: var(--border-mid) transparent;
+}
+
+*::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: var(--border-mid);
+    border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--text-faint);
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* ─── error boundary fallback ───────────────────────────── */
+
+.eb-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+}
+
+.eb-card {
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 40px 32px;
+    box-shadow: var(--shadow-md);
+}
+
+.eb-icon {
+    width: 56px;
+    height: 56px;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--danger-dim);
+    color: var(--danger);
+}
+
+.eb-title {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.eb-sub {
+    margin: 0 0 24px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.eb-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.eb-btn {
+    padding: 10px 18px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    border: 1px solid transparent;
+    transition: background var(--transition), border-color var(--transition);
+}
+
+.eb-btn--primary {
+    background: var(--accent);
+    color: #fff;
+}
+
+.eb-btn--primary:hover {
+    background: var(--accent-hover);
+}
+
+.eb-btn--ghost {
+    background: transparent;
+    border-color: var(--border-mid);
+    color: var(--text-secondary);
+}
+
+.eb-btn--ghost:hover {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+}

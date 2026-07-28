@@ -246,6 +246,16 @@
     font-weight: 400;
 }
 
+.sp-questions-partial {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--warning);
+    background: var(--warning-dim);
+    border-radius: var(--radius-sm);
+    padding: 6px 9px;
+    margin: 8px 0 0;
+}
+
 .sp-questions-preview {
     display: flex;
     flex-wrap: wrap;

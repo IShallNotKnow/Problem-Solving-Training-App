@@ -156,6 +156,7 @@ export default function Dashboard() {
                         <button
                             className="dash-card dash-card--new"
                             onClick={handleNewSession}
+
                         >
                             <FiPlus size={24} className="dash-card-new-icon" />
                             <span>New session</span>

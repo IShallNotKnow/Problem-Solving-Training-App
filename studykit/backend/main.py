@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import httpx
+from arq import create_pool
+from arq.jobs import Job, JobStatus
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,6 @@ from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from valkey import Valkey
-from arq.jobs import Job, JobStatus
 
 from auth import get_current_user
 from config import settings
@@ -31,6 +32,7 @@ from dependencies import (
     get_user_supabase,
 )
 from exceptions import DatabaseError, RateLimitExceeded, SessionNotFoundError, StorageError
+from generator import REDIS_SETTINGS
 from models import (
     AnswerRequest,
     AnswerResponse,
@@ -58,8 +60,6 @@ from processing import (
 from session_store import SessionStore
 from storage import StorageManager
 from supabase import AsyncClient, AsyncClientOptions, acreate_client
-from arq import create_pool
-from generator import REDIS_SETTINGS
 
 load_dotenv()
 
@@ -634,7 +634,14 @@ async def submit_answer(
     question_result = result.results[0]
     if not question_result.topic_results:
         raise HTTPException(status_code=500, detail="Grading did not return topic results")
-    if {tr.topic for tr in question_result.topic_results} != set(question.topics):
+    returned_topics = [tr.topic for tr in question_result.topic_results]
+    if len(returned_topics) != len(set(returned_topics)):
+        # Duplicates would apply the ELO/BKT update twice for the same topic.
+        raise HTTPException(
+            status_code=500,
+            detail="Grading returned duplicate topic results",
+        )
+    if set(returned_topics) != set(question.topics):
         raise HTTPException(
             status_code=500,
             detail="Grading returned topic results that don't match question topics",

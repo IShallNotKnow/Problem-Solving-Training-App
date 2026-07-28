@@ -1,44 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500&display=swap');
- 
-:root {
-    --bg:          #ffffff;
-    --bg-surface:  #f5f5f5;
-    --bg-card:     #ffffff;
-    --border:      rgba(0, 0, 0, 0.1);
-    --border-mid:  rgba(0, 0, 0, 0.18);
-    --text-primary:   #1a1a1a;
-    --text-secondary: #888888;
-    --text-muted:     #aaaaaa;
-    --accent:      #185FA5;
-    --accent-soft: #378ADD;
-    --accent-bg:   #E6F1FB;
-    --accent-text: #0C447C;
-    --brand:       #0C447C;
-    --panel-bg:    #0C447C;
-    --panel-brand: #B5D4F4;
-    --panel-title: #E6F1FB;
-    --panel-sub:   #378ADD;
-}
- 
-[data-theme='dark'] {
-    --bg:          #0f1117;
-    --bg-surface:  #181c27;
-    --bg-card:     #181c27;
-    --border:      rgba(255, 255, 255, 0.08);
-    --border-mid:  rgba(255, 255, 255, 0.15);
-    --text-primary:   #f0f0f0;
-    --text-secondary: #888888;
-    --text-muted:     #555555;
-    --accent:      #185FA5;
-    --accent-soft: #378ADD;
-    --accent-bg:   rgba(55, 138, 221, 0.15);
-    --accent-text: #85B7EB;
-    --brand:       #85B7EB;
-    --panel-bg:    #0a0f1a;
-    --panel-brand: #85B7EB;
-    --panel-title: #e0eaf5;
-    --panel-sub:   #378ADD;
-}
+/* tokens live in src/styles/theme.css */
  
 .login-wrap {
     min-height: 100vh;

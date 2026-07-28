@@ -3,6 +3,7 @@ import { ThemeProvider } from './context/ThemeContext.jsx';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { ToastProvider } from './context/ToastContext.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import HomePage from './pages/HomePage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import SignupPage from './pages/SignupPage.jsx';
@@ -22,7 +23,7 @@ function ThemedApp() {
                     ? antTheme.darkAlgorithm
                     : antTheme.defaultAlgorithm,
                 token: {
-                    colorPrimary: '#7b6ef6',
+                    colorPrimary: '#185FA5',
                     borderRadius: 8,
                     fontFamily: 'inherit',
                 },
@@ -56,12 +57,14 @@ function ThemedApp() {
 
 export default function App() {
     return (
-        <BrowserRouter>
-            <ThemeProvider>
-                <AuthProvider>
-                    <ThemedApp />
-                </AuthProvider>
-            </ThemeProvider>
-        </BrowserRouter>
+        <ErrorBoundary>
+            <BrowserRouter>
+                <ThemeProvider>
+                    <AuthProvider>
+                        <ThemedApp />
+                    </AuthProvider>
+                </ThemeProvider>
+            </BrowserRouter>
+        </ErrorBoundary>
     );
 }

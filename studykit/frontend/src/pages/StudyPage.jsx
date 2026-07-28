@@ -47,11 +47,13 @@ export default function StudyPage() {
                     setMessages(loadedMessages);
                 }
 
-                const hasQuestions = state.questions?.length > 0;
-                const exhausted = state.current_question_index >= state.questions?.length;
-                if (!hasQuestions) {
+                const loadedQuestions = Array.isArray(state?.questions) ? state.questions : [];
+                const index = state?.current_question_index ?? 0;
+                if (loadedQuestions.length === 0) {
+                    // Session exists but generation produced nothing usable — let the
+                    // user upload/paste again rather than showing an empty study view.
                     setMode('idle');
-                } else if (exhausted) {
+                } else if (index >= loadedQuestions.length) {
                     setMode('complete');
                 } else {
                     setMode('answer');
@@ -134,16 +136,33 @@ export default function StudyPage() {
             });
 
             const result = await pollGeneration(sessionId, job_id);
+            const questions = Array.isArray(result?.questions) ? result.questions : [];
+
+            if (questions.length === 0) {
+                // Validation terminated early with nothing usable — stay in idle so the
+                // user can retry or supply different material, instead of an empty study view.
+                setSessionState(prev => ({ ...prev, questions: [], current_question_index: 0 }));
+                setMode('idle');
+                setRetryError({
+                    message: "Couldn't build questions from this material. Try a different file or add more detail.",
+                    onRetry: () => {
+                        setRetryError(null);
+                        handleGenerateAndPoll(sessionId, label, rawMarkdown);
+                    },
+                });
+                return;
+            }
 
             setSessionState(prev => ({
                 ...prev,
-                questions: result.questions,
+                questions,
                 current_question_index: 0,
             }));
             setMessages(prev => [...prev, {
                 role: 'assistant',
-                content: result.questions,
+                content: questions,
                 type: 'questions',
+                partial: result?.status === 'failed_validation',
             }]);
             setMode('answer');
             setRetryError(null);
@@ -182,31 +201,16 @@ export default function StudyPage() {
         setLoading(true);
         try {
             await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
-            const result = await apiFetch(`/sessions/${sessionId}/generate`, {
-                method: 'POST',
-                body: JSON.stringify({ label: sessionState.label }),
-            });
-
-            setSessionState(prev => ({
-                ...prev,
-                questions: result.questions,
-                current_question_index: 0,
-            }));
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                type: 'questions',
-                content: result.questions,
-            }]);
-            setMode('answer');
         } catch (err) {
-            // toast only — completion banner still visible, user can retry
+            setLoading(false);
             const msg = err.status < 500
                 ? err.message
-                : 'Could not generate new questions — please try again.';
+                : 'Could not reset this session — please try again.';
             toast.error(msg);
-        } finally {
-            setLoading(false);
+            return;
         }
+        // /generate is asynchronous (202 + job_id) — must poll, not read questions directly.
+        await handleGenerateAndPoll(sessionId, sessionState?.label ?? 'Study set', '');
     };
 
     // ── answer ────────────────────────────────────────────────
@@ -216,7 +220,7 @@ export default function StudyPage() {
 
     const handleAnswer = async (choiceIndex = null) => {
         const currentInput = inputText;
-        const currentQuestion = sessionState?.questions[sessionState?.current_question_index];
+        const currentQuestion = sessionState?.questions?.[sessionState?.current_question_index];
         if (!currentQuestion) return;
 
         const isMCQ = currentQuestion.question_type === 'MCQ';
@@ -362,12 +366,17 @@ export default function StudyPage() {
     };
 
     // ── derived ───────────────────────────────────────────────
+    // Single normalized source of truth — every render path below reads this
+    // instead of sessionState.questions, which may be undefined mid-flight.
+    const questions = Array.isArray(sessionState?.questions) ? sessionState.questions : [];
+    const questionCount = questions.length;
+    const answeredCount = Math.min(sessionState?.current_question_index ?? 0, questionCount);
+
     const hasActiveQuestions =
-        sessionState?.questions?.length > 0 &&
-        sessionState.current_question_index < sessionState.questions.length;
+        questionCount > 0 && (sessionState?.current_question_index ?? 0) < questionCount;
 
     const currentQuestion = hasActiveQuestions
-        ? sessionState.questions[sessionState.current_question_index]
+        ? questions[sessionState.current_question_index]
         : null;
 
     const sessionTitle = sessionState?.label || 'New session';
@@ -437,21 +446,18 @@ export default function StudyPage() {
             </header>
 
             {/* ── progress bar ── */}
-            {sessionState?.questions?.length > 0 && (
+            {questionCount > 0 && (
                 <div className="sp-progress-wrap">
                     <div className="sp-progress-track">
                         <div
                             className="sp-progress-fill"
                             style={{
-                                width: `${Math.min(
-                                    (sessionState.current_question_index / sessionState.questions.length) * 100,
-                                    100
-                                )}%`
+                                width: `${Math.min((answeredCount / questionCount) * 100, 100)}%`
                             }}
                         />
                     </div>
                     <span className="sp-progress-label">
-                        {sessionState.current_question_index}/{sessionState.questions.length}
+                        {answeredCount}/{questionCount}
                     </span>
                 </div>
             )}
@@ -480,24 +486,36 @@ export default function StudyPage() {
                                 )}
 
                                 {msg.type === 'questions' ? (
-                                    <div className="sp-questions">
-                                        <p className="sp-questions-label">
-                                            {msg.content.length} questions generated — starting below.
-                                        </p>
-                                        <div className="sp-questions-preview">
-                                            {msg.content.slice(0, 3).map((q, qi) => (
-                                                <div key={q.question_id} className="sp-question-chip">
-                                                    <span className="sp-question-chip-num">Q{qi + 1}</span>
-                                                    <span className="sp-question-chip-type">{q.question_type}</span>
+                                    (() => {
+                                        const qs = Array.isArray(msg.content) ? msg.content : [];
+                                        return (
+                                            <div className="sp-questions">
+                                                <p className="sp-questions-label">
+                                                    {qs.length === 0
+                                                        ? 'No questions could be generated from this material.'
+                                                        : `${qs.length} question${qs.length === 1 ? '' : 's'} generated — starting below.`}
+                                                </p>
+                                                {msg.partial && qs.length > 0 && (
+                                                    <p className="sp-questions-partial">
+                                                        Some questions didn’t pass quality checks, so this set is shorter than usual.
+                                                    </p>
+                                                )}
+                                                <div className="sp-questions-preview">
+                                                    {qs.slice(0, 3).map((q, qi) => (
+                                                        <div key={q.question_id ?? qi} className="sp-question-chip">
+                                                            <span className="sp-question-chip-num">Q{qi + 1}</span>
+                                                            <span className="sp-question-chip-type">{q.question_type}</span>
+                                                        </div>
+                                                    ))}
+                                                    {qs.length > 3 && (
+                                                        <span className="sp-question-chip sp-question-chip--more">
+                                                            +{qs.length - 3} more
+                                                        </span>
+                                                    )}
                                                 </div>
-                                            ))}
-                                            {msg.content.length > 3 && (
-                                                <span className="sp-question-chip sp-question-chip--more">
-                                                    +{msg.content.length - 3} more
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
+                                            </div>
+                                        );
+                                    })()
                                 ) : msg.type === 'answer_feedback' ? (
                                     <div className="sp-feedback">
                                         <div className={`sp-score-badge sp-score-badge--${msg.score >= 0.85 ? 'correct' : msg.score >= 0.5 ? 'partial' : 'incorrect'}`}>
@@ -523,7 +541,7 @@ export default function StudyPage() {
                         <div className="sp-question-card">
                             <div className="sp-question-card-header">
                                 <span className="sp-question-num">
-                                    Q{sessionState.current_question_index + 1} of {sessionState.questions.length}
+                                    Q{sessionState.current_question_index + 1} of {questionCount}
                                 </span>
                                 <span className="sp-question-type-badge">{currentQuestion.question_type}</span>
                             </div>
@@ -599,7 +617,7 @@ export default function StudyPage() {
                         <div className="sp-completion-text">
                             <p className="sp-completion-title">Session complete</p>
                             <p className="sp-completion-sub">
-                                {sessionState.questions.length} questions answered
+                                {questionCount} question{questionCount === 1 ? '' : 's'} answered
                             </p>
                         </div>
                         <div className="sp-completion-actions">

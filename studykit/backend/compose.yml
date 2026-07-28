@@ -29,7 +29,7 @@ services:
 
   worker:
     <<: *common-service
-    command: arq worker.WorkerSettings
+    command: arq generator.WorkerSettings
     environment: *common-env
     depends_on:
       valkey:

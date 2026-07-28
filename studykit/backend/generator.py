@@ -20,7 +20,7 @@ REDIS_SETTINGS = RedisSettings(host="valkey", port=6379)
 async def _build_user_client(jwt: str) -> AsyncClient:
     client = await acreate_client(
         settings.supabase_url,
-        settings.supabase_anon_key,
+        settings.supabase_key,
     )
     client.postgrest.auth(jwt)
     return client
@@ -30,7 +30,7 @@ async def startup(ctx):
     # service client has no JWT dependency — safe to build once at startup
     service_db = await acreate_client(
         settings.supabase_url,
-        settings.supabase_service_key,
+        settings.supabase_service_role_key,
     )
     ctx["storage_manager"] = StorageManager(service_db)
     ctx["question_generator"] = QuestionGenerator(AsyncOpenAI())

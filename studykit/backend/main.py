@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from valkey import Valkey
+from arq.jobs import Job, JobStatus
 
 from auth import get_current_user
 from config import settings
@@ -443,7 +444,7 @@ async def generate(
 
     await app.state.arq.enqueue_job(
         "generate_questions_task",
-        session_id,
+        str(session_id),
         {
             "jwt": jwt,
             "user_id": user["sub"],
@@ -465,25 +466,21 @@ async def generation_status(
 ):
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
 
-    job = await app.state.arq.job(job_id)
-    if not job:
-        raise HTTPException(404, "Job not found or expired")
-
+    job = Job(job_id, app.state.arq)
     status = await job.status()
 
-    if status == "complete":
-        result = await job.result()
-        if isinstance(result, Exception):
-            raise HTTPException(500, str(result))
-        return GenerationResultDTO(**result)
-
-    if status == "not_found":
+    if status == JobStatus.not_found:
         raise HTTPException(404, "Job not found or expired")
 
-    return JSONResponse(
-        status_code=202,
-        content={"job_id": job_id, "status": status},
-    )
+    if status == JobStatus.complete:
+        result_info = await job.result_info()
+        if result_info is None:
+            raise HTTPException(500, "Job completed but result unavailable")
+        if not result_info.success:
+            raise HTTPException(500, str(result_info.result))
+        return GenerationResultDTO(**result_info.result)
+
+    return JSONResponse(status_code=202, content={"job_id": job_id, "status": status.value})
 
 
 @app.get("/sessions", response_model=list[SessionSummary])

@@ -182,7 +182,7 @@ export default function StudyPage() {
         }
     };
 
-    async function pollGeneration(sessionId, jobId, intervalMs = 2000, maxWaitMs = 120000) {
+    async function pollGeneration(sessionId, jobId, intervalMs = 2000, maxWaitMs = 180000) {
         const deadline = Date.now() + maxWaitMs;
         while (Date.now() < deadline) {
             await new Promise(r => setTimeout(r, intervalMs));

@@ -15,7 +15,7 @@ from openai import APIStatusError, BadRequestError, RateLimitError
 from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from valkey import Valkey
+from valkey.asyncio import Valkey
 
 from auth import get_current_user
 from config import settings
@@ -69,11 +69,6 @@ SUPABASE_SERVICE_ROLE_KEY: str = settings.supabase_service_role_key
 
 MODEL = "gpt-5-mini"
 
-
-VALKEY_URL = settings.valkey_url
-valkey_client = Valkey.from_url(VALKEY_URL)
-limiter = Limiter(key_func=get_remote_address, storage_uri=VALKEY_URL)
-
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -95,6 +90,7 @@ async def lifespan(app: FastAPI):
         SUPABASE_SERVICE_ROLE_KEY,
         options=AsyncClientOptions(httpx_client=app.state.http),
     )
+    app.state.valkey = await Valkey.from_url(settings.valkey_url)
 
     app.state.arq = await create_pool(REDIS_SETTINGS)
     logger.info("Startup complete")
@@ -103,7 +99,10 @@ async def lifespan(app: FastAPI):
 
     await app.state.arq.close()
     await app.state.http.aclose()
+    await app.state.valkey.aclose()
 
+
+limiter = Limiter(key_func=get_remote_address, storage_uri=settings.valkey_url)
 
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
@@ -438,23 +437,20 @@ async def generate(
     user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
-
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
     jwt = request.headers.get("Authorization", "").removeprefix("Bearer ")
 
-    await app.state.arq.enqueue_job(
+    existing = await app.state.valkey.get(f"active_job:{session_id}")
+    if existing:
+        return {"job_id": existing.decode(), "status": "pending"}
+
+    job = await app.state.arq.enqueue_job(
         "generate_questions_task",
         str(session_id),
-        {
-            "jwt": jwt,
-            "user_id": user["sub"],
-            "raw_markdown": req.raw_markdown,
-            "label": req.label,
-        },
-        _job_id=f"generate:{session_id}",
+        {"jwt": jwt, "user_id": user["sub"], "raw_markdown": req.raw_markdown, "label": req.label},
     )
-
-    return {"job_id": f"generate:{session_id}", "status": "pending"}
+    await app.state.valkey.set(f"active_job:{session_id}", job.job_id, ex=3600)
+    return {"job_id": job.job_id, "status": "pending"}
 
 
 @app.get("/sessions/{session_id}/generate/{job_id}", response_model=GenerationResultDTO)

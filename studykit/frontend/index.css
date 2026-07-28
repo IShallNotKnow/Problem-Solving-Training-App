@@ -109,3 +109,8 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+
+:root {
+  transition: background 0.2s, color 0.2s;
+}

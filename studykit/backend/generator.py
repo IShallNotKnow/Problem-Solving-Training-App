@@ -86,7 +86,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         raise ValueError("No questions could be generated from this content")
 
     await session_store.replace_questions_and_finalize(
-        ss_id=ss_id,
+        session_id=ss_id,
         questions=result.questions,
         generation_input_id=upload_context["generation_input_id"] if upload_context else None,
     )

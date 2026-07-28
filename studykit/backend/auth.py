@@ -1,4 +1,3 @@
-
 import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -10,6 +9,7 @@ security = HTTPBearer()
 
 _jwks_cache: dict | None = None
 
+
 async def get_jwks() -> dict:
     global _jwks_cache
     if _jwks_cache is not None:
@@ -20,9 +20,8 @@ async def get_jwks() -> dict:
         _jwks_cache = res.json()
         return _jwks_cache
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         jwks = await get_jwks()

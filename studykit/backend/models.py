@@ -9,8 +9,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # Models
 # ---------------------------------------------------------------------------
 
+
 class CreateSessionRequest(BaseModel):
     label: str | None = None
+
 
 class GenerationStatus(str, Enum):
     GENERATED = "generated"
@@ -43,11 +45,15 @@ class Question(BaseModel):
 
         for topic, difficulty in self.topic_difficulties.items():
             if not (300 <= difficulty <= 3000):
-                raise ValueError(f"{self.question_id}: difficulty for topic '{topic}' must be between 300 and 3000")
+                raise ValueError(
+                    f"{self.question_id}: difficulty for topic '{topic}' must be between 300 and 3000"
+                )
         if self.question_type == "MCQ":
             if not self.choices or len(self.choices) < 3:
                 raise ValueError(f"{self.question_id}: MCQ requires >=3 choices")
-            if self.correct_choice_index is None or not (0 <= self.correct_choice_index < len(self.choices)):
+            if self.correct_choice_index is None or not (
+                0 <= self.correct_choice_index < len(self.choices)
+            ):
                 raise ValueError(f"{self.question_id}: invalid correct_choice_index")
         elif self.question_type == "FRQ":
             if not self.rubric_points:
@@ -144,10 +150,7 @@ class SessionState(BaseModel):
         self.current_question_index += 1
 
     def get_topic_elo(self, topics: list[str]) -> dict:
-        return {
-            t: self.topic_stats[t].elo if t in self.topic_stats else 800
-            for t in topics
-        }
+        return {t: self.topic_stats[t].elo if t in self.topic_stats else 800 for t in topics}
 
     def topic_profile(self, min_attempts: int = 2) -> dict:
         strong, weak, unseen = [], [], []
@@ -271,12 +274,9 @@ QUESTION_GENERATION_TOOL = {
                         "properties": {
                             "question_id": {
                                 "type": "string",
-                                "description": "Unique short id, e.g. 'q1', 'q2'."
+                                "description": "Unique short id, e.g. 'q1', 'q2'.",
                             },
-                            "question_type": {
-                                "type": "string",
-                                "enum": ["MCQ", "FRQ"]
-                            },
+                            "question_type": {"type": "string", "enum": ["MCQ", "FRQ"]},
                             "topic_difficulties": {
                                 "type": "object",
                                 "description": (
@@ -289,13 +289,13 @@ QUESTION_GENERATION_TOOL = {
                                 "additionalProperties": {
                                     "type": "integer",
                                     "minimum": 300,
-                                    "maximum": 3000
+                                    "maximum": 3000,
                                 },
-                                "minProperties": 1
+                                "minProperties": 1,
                             },
                             "prompt": {
                                 "type": "string",
-                                "description": "The question text shown to the student."
+                                "description": "The question text shown to the student.",
                             },
                             "choices": {
                                 "type": ["array", "null"],
@@ -305,21 +305,21 @@ QUESTION_GENERATION_TOOL = {
                                 "description": (
                                     "MCQ only. 3-5 answer options, plain text, "
                                     "no leading letters like 'A)'. Null for FRQ."
-                                )
+                                ),
                             },
                             "correct_choice_index": {
                                 "type": ["integer", "null"],
                                 "description": (
                                     "MCQ only. 0-based index into `choices` "
                                     "for the correct answer. Null for FRQ."
-                                )
+                                ),
                             },
                             "correct_answer": {
                                 "type": "string",
                                 "description": (
                                     "MCQ: the correct choice text. "
                                     "FRQ: a complete, ideal model answer."
-                                )
+                                ),
                             },
                             "rubric_points": {
                                 "type": ["array", "null"],
@@ -327,7 +327,7 @@ QUESTION_GENERATION_TOOL = {
                                 "description": (
                                     "FRQ only. 2-5 discrete, checkable points "
                                     "a correct answer must hit. Null for MCQ."
-                                )
+                                ),
                             },
                             "explanation": {
                                 "type": "string",
@@ -336,8 +336,8 @@ QUESTION_GENERATION_TOOL = {
                                     "grading explaining why the correct answer is right. "
                                     "For MCQ also explain why the distractors are wrong. "
                                     "For FRQ summarise the key insight a correct answer must show."
-                                )
-                            }
+                                ),
+                            },
                         },
                         "required": [
                             "question_id",
@@ -350,14 +350,14 @@ QUESTION_GENERATION_TOOL = {
                             "correct_choice_index",
                             "rubric_points",
                         ],
-                        "additionalProperties": False
-                    }
+                        "additionalProperties": False,
+                    },
                 }
             },
             "required": ["questions"],
-            "additionalProperties": False
-        }
-    }
+            "additionalProperties": False,
+        },
+    },
 }
 
 QUESTION_VALIDATION_TOOL = {
@@ -374,9 +374,7 @@ QUESTION_VALIDATION_TOOL = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "question_id": {
-                                "type": "string"
-                            },
+                            "question_id": {"type": "string"},
                             "approved": {
                                 "type": "boolean",
                                 "description": (
@@ -423,9 +421,7 @@ ANSWER_VALIDATION_TOOL = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "question_id": {
-                                "type": "string"
-                            },
+                            "question_id": {"type": "string"},
                             "score": {
                                 "type": "number",
                                 "minimum": 0.0,
@@ -446,8 +442,7 @@ ANSWER_VALIDATION_TOOL = {
                             "misconception": {
                                 "type": ["string", "null"],
                                 "description": (
-                                    "Short tag for a recurring error type if present, "
-                                    "else null."
+                                    "Short tag for a recurring error type if present, else null."
                                 ),
                             },
                             "topic_results": {
@@ -460,9 +455,7 @@ ANSWER_VALIDATION_TOOL = {
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "topic": {
-                                            "type": "string"
-                                        },
+                                        "topic": {"type": "string"},
                                         "score": {
                                             "type": "number",
                                             "minimum": 0.0,
@@ -472,9 +465,7 @@ ANSWER_VALIDATION_TOOL = {
                                                 "demonstrated understanding of this topic."
                                             ),
                                         },
-                                        "correct": {
-                                            "type": "boolean"
-                                        },
+                                        "correct": {"type": "boolean"},
                                         "confidence": {
                                             "type": "number",
                                             "minimum": 0.0,

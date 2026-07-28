@@ -6,18 +6,16 @@ from openai import AsyncOpenAI
 from supabase._async.client import AsyncClient, create_async_client
 
 from config import settings
-from main import (
-    DatabaseError,
-    QuestionGenerator,
-    SessionNotFoundError,
-    SessionStore,
-    StorageManager,
-)
+from exceptions import DatabaseError, SessionNotFoundError
 from models import QuestionDTO
+from processing import QuestionGenerator
+from session_store import SessionStore
+from storage import StorageManager
 
 logger = logging.getLogger(__name__)
 
 REDIS_SETTINGS = RedisSettings(host="valkey", port=6379)
+
 
 async def _build_user_client(jwt: str) -> AsyncClient:
     client = await create_async_client(
@@ -26,6 +24,7 @@ async def _build_user_client(jwt: str) -> AsyncClient:
     )
     client.postgrest.auth(jwt)
     return client
+
 
 async def startup(ctx):
     # service client has no JWT dependency — safe to build once at startup
@@ -36,8 +35,10 @@ async def startup(ctx):
     ctx["storage_manager"] = StorageManager(service_db)
     ctx["question_generator"] = QuestionGenerator(AsyncOpenAI())
 
+
 async def shutdown(ctx):
     pass
+
 
 async def generate_questions_task(ctx, session_id: UUID, job: dict):
     jwt = job["jwt"]
@@ -72,21 +73,28 @@ async def generate_questions_task(ctx, session_id: UUID, job: dict):
 
     content = upload_context["content"] if upload_context else job["raw_markdown"]
 
-    result = await question_generator.generate_questions(content, raw_images, storage_manager, session_id, profile)
+    result = await question_generator.generate_questions(
+        content, raw_images, storage_manager, session_id, profile
+    )
 
     if not result.questions:
         raise ValueError("No questions could be generated from this content")
 
     await session_store.replace_questions_and_finalize(
-            session_id=session_id,
-            questions=result.questions,
-            generation_input_id=upload_context["generation_input_id"] if upload_context else None,
-        )
-    logger.info(f"[endpoint] generate complete for session {session_id}: {len(result.questions)} questions, status={result.status}")
+        session_id=session_id,
+        questions=result.questions,
+        generation_input_id=upload_context["generation_input_id"] if upload_context else None,
+    )
+    logger.info(
+        f"[endpoint] generate complete for session {session_id}: {len(result.questions)} questions, status={result.status}"
+    )
 
     return {
         "status": result.status,
-        "questions": [QuestionDTO.model_validate(q, from_attributes=True).model_dump() for q in result.questions],
+        "questions": [
+            QuestionDTO.model_validate(q, from_attributes=True).model_dump()
+            for q in result.questions
+        ],
         "validation": result.validation,
         "message": result.message,
     }

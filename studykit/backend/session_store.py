@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
@@ -118,8 +117,8 @@ class SessionStore:
                 "p_feedback": question_result.feedback,
                 "p_misconception": question_result.misconception,
                 "p_next_index": next_index,
-                "p_topic_stats": json.dumps([stats.model_dump() for stats in topic_stats.values()]),
-                "p_elo_history": json.dumps([u.model_dump() for u in updates]),
+                "p_topic_stats": [stats.model_dump() for stats in topic_stats.values()],
+                "p_elo_history": [u.model_dump() for u in updates],
             },
         ).execute()
         logger.info(f"[session] answer submitted successfully for question {question_id}")
@@ -218,7 +217,7 @@ class SessionStore:
             "replace_questions",
             {
                 "p_session_id": str(session_id),
-                "p_questions": json.dumps(payload),
+                "p_questions": payload,
             },
         ).execute()
 

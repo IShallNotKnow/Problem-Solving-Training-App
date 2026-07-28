@@ -95,7 +95,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
     )
 
     return {
-        "status": result.status,
+        "status": result.status.value,
         "questions": [
             QuestionDTO.model_validate(q, from_attributes=True).model_dump()
             for q in result.questions

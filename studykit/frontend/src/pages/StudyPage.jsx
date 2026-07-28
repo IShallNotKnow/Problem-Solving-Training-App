@@ -191,7 +191,7 @@ export default function StudyPage() {
             if (data.status === 'generated') return data;           // GenerationResultDTO
             if (data.status === 'failed_validation') return data;   // has questions, but flagged
             if (data.status === 'error') throw new Error(data.message || 'Generation failed');
-            // 'pending' or 'in_progress' → keep polling
+            // 'queued' or 'in_progress' → keep polling
         }
         throw new Error('Generation timed out — please try again.');
     }
@@ -214,9 +214,7 @@ export default function StudyPage() {
     };
 
     // ── answer ────────────────────────────────────────────────
-    const isMcqAnswerMode =
-        mode === 'answer' &&
-        currentQuestion?.question_type === 'MCQ';
+    
 
     const handleAnswer = async (choiceIndex = null) => {
         const currentInput = inputText;
@@ -378,6 +376,10 @@ export default function StudyPage() {
     const currentQuestion = hasActiveQuestions
         ? questions[sessionState.current_question_index]
         : null;
+    
+    const isMcqAnswerMode =
+        mode === 'answer' &&
+        currentQuestion?.question_type === 'MCQ';
 
     const sessionTitle = sessionState?.label || 'New session';
 

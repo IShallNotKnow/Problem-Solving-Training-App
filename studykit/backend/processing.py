@@ -4,6 +4,8 @@ import json
 import logging
 from urllib.parse import urlparse
 from uuid import UUID
+import re
+import unicodedata
 
 import httpx
 from dotenv import load_dotenv
@@ -173,19 +175,29 @@ def _parse_text(message) -> str:
 
 
 def _normalize_topic_key(topic: str) -> str:
-    # replace curly/smart apostrophes and similar with ASCII equivalent
-    replacements = {
-        '\u2019': "'",  # right single quotation mark '
-        '\u2018': "'",  # left single quotation mark '
-        '\u201c': '"',  # left double quotation mark "
-        '\u201d': '"',  # right double quotation mark "
-        '\u2013': '-',  # en dash
-        '\u2014': '-',  # em dash
-    }
-    for char, replacement in replacements.items():
-        topic = topic.replace(char, replacement)
-    # strip any remaining non-printable characters
-    return ''.join(c for c in topic if c.isprintable()).strip()
+    # replace control characters — DEL is the known apostrophe mangling,
+    # map the whole C0/C1 range defensively
+    topic = re.sub(r'[\x00-\x1f\x7f\x80-\x9f]', lambda m: {
+        '\x7f': "'",   # DEL → apostrophe
+        '\x91': "'",   # Windows-1252 left single quote
+        '\x92': "'",   # Windows-1252 right single quote
+        '\x93': '"',   # Windows-1252 left double quote
+        '\x94': '"',   # Windows-1252 right double quote
+        '\x96': '-',   # Windows-1252 en dash
+        '\x97': '-',   # Windows-1252 em dash
+    }.get(m.group(), ''), topic)
+
+    # NFKC handles ligatures, fullwidth variants, etc.
+    topic = unicodedata.normalize('NFKC', topic)
+
+    # Unicode smart quotes — NFKC doesn't collapse these to ASCII
+    topic = topic.translate(str.maketrans({
+        '\u2018': "'", '\u2019': "'",
+        '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '-',
+    }))
+
+    return topic.strip()
 
 
 # ---------------------------------------------------------------------------

@@ -632,6 +632,10 @@ async def submit_answer(
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
 
     question_result = result.results[0]
+
+    logger.info(f"[endpoint] topic_results topics: {[tr.topic for tr in question_result.topic_results]}")
+    logger.info(f"[endpoint] question.topics: {question.topics}")
+
     if not question_result.topic_results:
         raise HTTPException(status_code=500, detail="Grading did not return topic results")
     returned_topics = [tr.topic for tr in question_result.topic_results]

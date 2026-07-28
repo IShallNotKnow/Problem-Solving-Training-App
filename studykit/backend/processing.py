@@ -574,6 +574,12 @@ Generate exactly 20 study questions from the supplied study material:
 - 10 multiple-choice questions (MCQ)
 - 10 free-response questions (FRQ)
 
+FIELD REQUIREMENTS — every question must satisfy these exactly:
+- correct_answer: mandatory without exception. MCQ → copy the winning choice text verbatim from choices. FRQ → write a complete answer covering every rubric point.
+- choices + correct_choice_index: MCQ only, null for FRQ.
+- rubric_points: FRQ only, null for MCQ.
+- explanation: required for all types.
+
 Questions should assess understanding of key concepts and problem-solving skills.
 {balance_instruction}
 

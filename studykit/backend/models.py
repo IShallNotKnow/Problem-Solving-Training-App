@@ -263,12 +263,7 @@ QUESTION_GENERATION_TOOL = {
     "type": "function",
     "function": {
         "name": "generate_questions",
-        "description": (
-            "Submit a batch of generated study questions. "
-            "CRITICAL: Every question must match its type. "
-            "If MCQ: choices and correct_choice_index MUST NOT be null. "
-            "If FRQ: rubric_points MUST NOT be null."
-        ),
+        "description": "Submit a batch of generated study questions with answers and grading rubrics.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -281,12 +276,7 @@ QUESTION_GENERATION_TOOL = {
                                 "type": "string",
                                 "description": "Unique short id, e.g. 'q1', 'q2'.",
                             },
-                            # 1. RENAME FOR URGENCY: Making the key itself highly descriptive
-                            "REQUIRED_question_type": {
-                                "type": "string", 
-                                "enum": ["MCQ", "FRQ"],
-                                "description": "MANDATORY TYPE. 'MCQ' requires multiple choice keys. 'FRQ' requires rubric keys."
-                            },
+                            "question_type": {"type": "string", "enum": ["MCQ", "FRQ"]},
                             "topic_difficulties": {
                                 "type": "object",
                                 "description": (
@@ -307,41 +297,37 @@ QUESTION_GENERATION_TOOL = {
                                 "type": "string",
                                 "description": "The question text shown to the student.",
                             },
-                            # 2. ISOLATION & ANCHORING: Grouping conditional fields together textually
-                            "MCQ_ONLY_choices_array": {
+                            "choices": {
                                 "type": ["array", "null"],
                                 "items": {"type": "string"},
                                 "minItems": 3,
                                 "maxItems": 5,
                                 "description": (
-                                    "REQUIRED FOR MCQ. Provide 3-5 plain text answer options. "
-                                    "Do not include leading letters like 'A)'. "
-                                    "CRITICAL: Set to null IF AND ONLY IF REQUIRED_question_type is 'FRQ'."
+                                    "MCQ only. 3-5 answer options, plain text, "
+                                    "no leading letters like 'A)'. Null for FRQ."
                                 ),
                             },
-                            "MCQ_ONLY_correct_choice_index": {
+                            "correct_choice_index": {
                                 "type": ["integer", "null"],
                                 "description": (
-                                    "REQUIRED FOR MCQ. The 0-based index pointing to the correct option "
-                                    "in MCQ_ONLY_choices_array. "
-                                    "CRITICAL: Set to null IF AND ONLY IF REQUIRED_question_type is 'FRQ'."
+                                    "MCQ only. 0-based index into `choices` "
+                                    "for the correct answer. Null for FRQ."
                                 ),
                             },
-                            "FRQ_ONLY_rubric_points": {
+                            "correct_answer": {
+                                "type": "string",
+                                "description": (
+                                    "ALWAYS required — never omit this field. "
+                                    "MCQ: copy the exact text of the correct choice from `choices` verbatim. "
+                                    "FRQ: write a complete model answer that fully satisfies all rubric_points."
+                                ),
+                            },
+                            "rubric_points": {
                                 "type": ["array", "null"],
                                 "items": {"type": "string"},
                                 "description": (
-                                    "REQUIRED FOR FRQ. Provide 2-5 discrete, checkable milestones "
-                                    "the grading logic checks for. "
-                                    "CRITICAL: Set to null IF AND ONLY IF REQUIRED_question_type is 'MCQ'."
-                                ),
-                            },
-                            "correct_answer_text_string": {
-                                "type": "string",
-                                "description": (
-                                    "MANDATORY STRING. "
-                                    "If MCQ: Provide the exact text string of the correct choice. "
-                                    "If FRQ: Provide a comprehensive, ideal model answer."
+                                    "FRQ only. 2-5 discrete, checkable points "
+                                    "a correct answer must hit. Null for MCQ."
                                 ),
                             },
                             "explanation": {
@@ -356,14 +342,14 @@ QUESTION_GENERATION_TOOL = {
                         },
                         "required": [
                             "question_id",
-                            "REQUIRED_question_type",
+                            "question_type",
                             "topic_difficulties",
                             "prompt",
-                            "correct_answer_text_string",
+                            "correct_answer",
                             "explanation",
-                            "MCQ_ONLY_choices_array",
-                            "MCQ_ONLY_correct_choice_index",
-                            "FRQ_ONLY_rubric_points",
+                            "choices",
+                            "correct_choice_index",
+                            "rubric_points",
                         ],
                         "additionalProperties": False,
                     },

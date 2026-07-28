@@ -112,7 +112,6 @@ export default function Dashboard() {
                         <button
                             className="dash-new-btn"
                             onClick={handleNewSession}
-                            disabled={creating}
                         >
                             <FiPlus size={15} />
                             New session
@@ -157,7 +156,6 @@ export default function Dashboard() {
                         <button
                             className="dash-card dash-card--new"
                             onClick={handleNewSession}
-                            disabled={creating}
                         >
                             <FiPlus size={24} className="dash-card-new-icon" />
                             <span>New session</span>

@@ -456,7 +456,14 @@ ANSWER_VALIDATION_TOOL = {
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "topic": {"type": "string"},
+                                        "topic": {
+                                            "type": "string",
+                                            "description": (
+                                                "Copy this value exactly as it appears in the "
+                                                "topic_difficulties keys of the grading_data — "
+                                                "do not rephrase, translate, or alter punctuation."
+                                            ),
+                                        },
                                         "score": {
                                             "type": "number",
                                             "minimum": 0.0,

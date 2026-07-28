@@ -75,7 +75,7 @@ function HomePage() {
                             Don&apos;t just memorize. Learn to <em>think through it.</em>
                         </h2>
                         <p className="hp-problem-desc">
-                            For CS and math, flashcards aren&apos;t enough. Studykit generates novel
+                            For some classes, flashcards just aren&apos;t enough. Studykit generates novel
                             practice problems that test how you apply concepts, not just whether
                             you remember them.
                         </p>

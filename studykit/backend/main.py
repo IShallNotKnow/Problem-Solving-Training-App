@@ -623,6 +623,7 @@ async def submit_answer(
                 question=question,
                 state=state,
             )
+            
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -632,6 +633,18 @@ async def submit_answer(
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
 
     question_result = result.results[0]
+
+    def _normalize_topic(t: str) -> str:
+        return ''.join(c for c in t if c.isprintable()).strip()
+
+    grader_topics = {_normalize_topic(tr.topic) for tr in question_result.topic_results}
+    question_topics = {_normalize_topic(t) for t in question.topics}
+
+    if not question_result.topic_results:
+        raise HTTPException(status_code=500, detail="Grading did not return topic results")
+    if grader_topics != question_topics:
+        logger.warning(f"[endpoint] topic mismatch after normalization: grader={grader_topics} question={question_topics}")
+        raise HTTPException(status_code=500, detail="Grading returned topic results that don't match question topics")
 
     logger.info(f"[endpoint] topic_results topics: {[tr.topic for tr in question_result.topic_results]}")
     logger.info(f"[endpoint] question.topics: {question.topics}")

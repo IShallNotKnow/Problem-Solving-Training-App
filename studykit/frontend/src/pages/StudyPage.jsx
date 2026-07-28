@@ -428,41 +428,43 @@ export default function StudyPage() {
     return (
         <div className="sp-wrap">
             {/* ── header ── */}
-            <header className="sp-header">
-                <button
-                    className="sp-back-btn"
-                    onClick={() => navigate('/dashboard')}
-                    aria-label="Back to dashboard"
-                >
-                    <FiArrowLeft size={16} />
-                    Sessions
-                </button>
-                <span className="sp-session-title">{sessionTitle}</span>
-                <button
-                    className="sp-theme-btn"
-                    onClick={toggleTheme}
-                    aria-label="Toggle theme"
-                >
-                    {theme === 'dark' ? <FiSun size={15} /> : <FiMoon size={15} />}
-                </button>
-            </header>
+            <div class="sp-topbar">
+                <header className="sp-header">
+                    <button
+                        className="sp-back-btn"
+                        onClick={() => navigate('/dashboard')}
+                        aria-label="Back to dashboard"
+                    >
+                        <FiArrowLeft size={16} />
+                        Sessions
+                    </button>
+                    <span className="sp-session-title">{sessionTitle}</span>
+                    <button
+                        className="sp-theme-btn"
+                        onClick={toggleTheme}
+                        aria-label="Toggle theme"
+                    >
+                        {theme === 'dark' ? <FiSun size={15} /> : <FiMoon size={15} />}
+                    </button>
+                </header>
 
-            {/* ── progress bar ── */}
-            {questionCount > 0 && (
-                <div className="sp-progress-wrap">
-                    <div className="sp-progress-track">
-                        <div
-                            className="sp-progress-fill"
-                            style={{
-                                width: `${Math.min((answeredCount / questionCount) * 100, 100)}%`
-                            }}
-                        />
+                {/* ── progress bar ── */}
+                {questionCount > 0 && (
+                    <div className="sp-progress-wrap">
+                        <div className="sp-progress-track">
+                            <div
+                                className="sp-progress-fill"
+                                style={{
+                                    width: `${Math.min((answeredCount / questionCount) * 100, 100)}%`
+                                }}
+                            />
+                        </div>
+                        <span className="sp-progress-label">
+                            {answeredCount}/{questionCount}
+                        </span>
                     </div>
-                    <span className="sp-progress-label">
-                        {answeredCount}/{questionCount}
-                    </span>
-                </div>
-            )}
+                )}
+            </div>
 
             {/* ── messages ── */}
             <main className="sp-main">

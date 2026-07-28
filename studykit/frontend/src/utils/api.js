@@ -16,19 +16,17 @@ export const apiFetch = async (path, options = {}) => {
         },
     });
 
+    if (res.status === 204) return null;
+
+    const data = await res.json().catch(() => null);
+
     if (!res.ok) {
-        const body = await res.json().catch(() => ({ detail: 'Request failed' }));
-        const error = new Error(body.detail || 'Request failed');
+        const error = new Error(data?.detail || 'Request failed');
         error.status = res.status;
         throw error;
     }
 
-    const contentType = res.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-        return null;
-    }
-
-    return res.json();
+    return data;
 };
 
 export const apiUpload = async (path, formData) => {

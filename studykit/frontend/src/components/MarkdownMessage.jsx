@@ -58,7 +58,10 @@ function Mermaid({ chart, isDark }) {
 }
 
 export default function MarkdownMessage({ children, isDark = false }) {
-    const text = typeof children === 'string' ? children : String(children ?? '');
+    const raw = typeof children === 'string' ? children : String(children ?? '');
+    const text = raw
+        .replace(/\\\(/g, '$').replace(/\\\)/g, '$')
+        .replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
 
     return (
         <div className="md-body">

@@ -4,6 +4,7 @@ import { useTheme } from '../context/ThemeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { apiFetch, apiUpload } from '../utils/api.js';
 import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
+import MarkdownMessage from '../components/MarkdownMessage.jsx';
 import { IoSend } from 'react-icons/io5';
 import { Switch } from 'antd';
 import './StudyPage.css';
@@ -428,7 +429,7 @@ export default function StudyPage() {
     return (
         <div className="sp-wrap">
             {/* ── header ── */}
-            <div class="sp-topbar">
+            <div className="sp-topbar">
                 <header className="sp-header">
                     <button
                         className="sp-back-btn"
@@ -533,6 +534,8 @@ export default function StudyPage() {
                                             </p>
                                         )}
                                     </div>
+                                ) : msg.role === 'assistant' ? (
+                                    <MarkdownMessage content={String(msg.content)} />
                                 ) : (
                                     <span>{msg.content}</span>
                                 )}

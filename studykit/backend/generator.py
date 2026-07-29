@@ -3,7 +3,7 @@ from uuid import UUID
 
 import httpx
 from arq.connections import RedisSettings
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from valkey.asyncio import Valkey
 
 from config import settings
@@ -87,10 +87,13 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
 
         content = upload_context["content"] if upload_context else job["raw_markdown"]
 
-        result = await question_generator.generate_questions(
-            content, raw_images, storage_manager, ss_id, profile
-        )
-
+        try:
+            result = await question_generator.generate_questions(
+                content, raw_images, storage_manager, ss_id, profile
+            )
+        except BadRequestError as e:
+            logger.error(f"[worker] OpenAI rejected prompt for session {ss_id}: {e.message}")
+            raise ValueError("Content was flagged by the AI service — try different material")
         if not result.questions:
             raise ValueError("No questions could be generated from this content")
 

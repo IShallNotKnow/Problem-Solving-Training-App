@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from arq import create_pool
-from arq.jobs import Job, JobStatus
+from arq.jobs import Job, JobStatus, DeserializationError
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -469,7 +469,12 @@ async def generation_status(
         raise HTTPException(404, "Job not found or expired")
 
     if status == JobStatus.complete:
-        result_info = await job.result_info()
+        try:
+            result_info = await job.result_info()
+        except DeserializationError:
+            # stale result from before serialization fixes — treat as expired
+            logger.warning(f"[endpoint] stale job result for {job_id}, cannot deserialize")
+            raise HTTPException(404, "Job result expired — please regenerate")
         if result_info is None:
             raise HTTPException(500, "Job completed but result unavailable")
         if not result_info.success:

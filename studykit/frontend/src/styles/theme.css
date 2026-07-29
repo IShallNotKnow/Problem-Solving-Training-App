@@ -11,23 +11,26 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
 :root {
-    /* surfaces */
-    --bg: #ffffff;
-    --bg-surface: #f5f5f5;
+    /* surfaces
+       The page is a soft neutral and cards sit *above* it in white. Previously
+       --bg and --bg-card were both #ffffff, so the question card was invisible
+       against the page and large empty areas read as a wall of glare. */
+    --bg: #f4f6f9;
+    --bg-surface: #eceff4;
     --bg-card: #ffffff;
     --surface: #ffffff;
-    --surface-2: #f0f0f5;
+    --surface-2: #eceff4;
 
     /* borders */
-    --border: rgba(0, 0, 0, 0.1);
-    --border-mid: rgba(0, 0, 0, 0.18);
+    --border: rgba(15, 23, 42, 0.1);
+    --border-mid: rgba(15, 23, 42, 0.16);
 
-    /* text */
-    --text-primary: #1a1a1a;
-    --text-secondary: #6a6a75;
-    --text-muted: #8a8a95;
-    --text-faint: #c0c0d0;
-    --text: #1a1a1a;
+    /* text — darker secondary/muted so small labels stay legible on light bg */
+    --text-primary: #14181f;
+    --text-secondary: #4d5563;
+    --text-muted: #667085;
+    --text-faint: #98a2b3;
+    --text: #14181f;
 
     /* brand / accent — one blue family across every page */
     --accent: #185fa5;
@@ -144,6 +147,10 @@
 
 html {
     -webkit-text-size-adjust: 100%;
+    /* The overscroll ("rubber band") area is painted from the root element.
+       Without this it falls back to the UA canvas colour, which showed as a
+       stray light/purple band when scrolling past the end of the page. */
+    background: var(--bg);
 }
 
 body {
@@ -177,9 +184,13 @@ body,
     color: var(--accent-text);
 }
 
-/* Scrollbars that match the active theme instead of the OS default. */
+/* Scrollbars that match the active theme instead of the OS default.
+   `html` is listed explicitly because the root scrollbar is painted from the
+   root element, not from the universal selector's computed value. */
+html,
 * {
     scrollbar-color: var(--border-mid) transparent;
+    scrollbar-width: thin;
 }
 
 *::-webkit-scrollbar {
@@ -297,3 +308,109 @@ body,
     background: var(--bg-surface);
     color: var(--text-primary);
 }
+/* ─── rendered markdown (MarkdownMessage) ───────────────── */
+
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child  { margin-bottom: 0; }
+
+.md-body p { margin: 0 0 0.7em; }
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+    margin: 1.1em 0 0.45em;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.md-body h1 { font-size: 1.25em; }
+.md-body h2 { font-size: 1.15em; }
+.md-body h3 { font-size: 1.05em; }
+.md-body h4 { font-size: 1em; }
+
+.md-body ul,
+.md-body ol {
+    margin: 0 0 0.7em;
+    padding-left: 1.35em;
+}
+.md-body li { margin: 0.25em 0; }
+.md-body li > p { margin: 0; }
+
+.md-body strong { font-weight: 600; color: var(--text-primary); }
+
+.md-body blockquote {
+    margin: 0.7em 0;
+    padding: 0.1em 0 0.1em 0.9em;
+    border-left: 3px solid var(--accent-soft);
+    color: var(--text-secondary);
+}
+
+.md-code-inline {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.88em;
+    background: var(--accent-bg);
+    color: var(--accent-text);
+    padding: 0.12em 0.38em;
+    border-radius: 4px;
+    word-break: break-word;
+}
+
+.md-pre {
+    margin: 0.7em 0;
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+}
+
+.md-pre code {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 0.85em;
+    line-height: 1.55;
+    color: var(--text-primary);
+    background: none;
+    padding: 0;
+}
+
+.md-table-wrap { overflow-x: auto; margin: 0.7em 0; }
+
+.md-body table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.92em;
+}
+
+.md-body th,
+.md-body td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+}
+
+.md-body th {
+    background: var(--surface-2);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.md-mermaid {
+    margin: 0.8em 0;
+    padding: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow-x: auto;
+    text-align: center;
+}
+.md-mermaid svg { max-width: 100%; height: auto; }
+
+/* KaTeX: keep long display equations scrollable instead of overflowing. */
+.md-body .katex-display {
+    margin: 0.7em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+}
+.md-body .katex { font-size: 1.03em; }

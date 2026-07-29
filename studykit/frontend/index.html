@@ -30,10 +30,13 @@
     <meta name="twitter:description" content="Turn your lecture notes and slides into adaptive study questions. Upload a PDF or paste your notes and get started in seconds." />
     <meta name="twitter:image" content="https://www.studykit.dev/og-image.png" />
 
-    <!-- Theme -->
-    <meta name="theme-color" content="#aa3bff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#c084fc" media="(prefers-color-scheme: dark)" />
+    <!-- Theme: must match --accent in src/styles/theme.css, not the old purple. -->
+    <meta name="theme-color" content="#185fa5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)" />
     <meta name="color-scheme" content="light dark" />
+    <!-- The document's real scheme is driven by [data-theme] in
+         src/styles/theme.css so the scrollbar and overscroll band follow the
+         in-app toggle rather than the OS preference. -->
 
     <!-- Icons -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

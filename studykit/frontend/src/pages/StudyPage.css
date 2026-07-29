@@ -209,11 +209,17 @@
 
 .sp-message-bubble {
     max-width: 78%;
-    padding: 11px 14px;
+    padding: 12px 15px;
     border-radius: 12px;
-    font-size: 14px;
-    line-height: 1.55;
+    font-size: 15px;
+    line-height: 1.65;
     font-weight: 400;
+}
+
+/* Assistant answers are prose, not chat one-liners — give them room to breathe
+   and a wider column so formatted explanations stay readable. */
+.sp-message--assistant .sp-message-bubble {
+    max-width: 88%;
 }
 
 .sp-message--user .sp-message-bubble {
@@ -223,7 +229,7 @@
 }
 
 .sp-message--assistant .sp-message-bubble {
-    background: var(--bg-surface);
+    background: var(--bg-card);
     color: var(--text-primary);
     border: 0.5px solid var(--border);
     border-bottom-left-radius: 4px;
@@ -404,7 +410,7 @@
 }
 
 .sp-question-num {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--text-muted);
     letter-spacing: 0.4px;
@@ -412,7 +418,7 @@
 }
 
 .sp-question-type-badge {
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 500;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -425,7 +431,7 @@
 
 .sp-question-prompt {
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 17px;
+    font-size: 18px;
     font-weight: 400;
     color: var(--text-primary);
     line-height: 1.5;
@@ -453,7 +459,7 @@
     cursor: pointer;
     text-align: left;
     font-family: 'DM Sans', sans-serif;
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 400;
     color: var(--text-primary);
     transition: background 0.12s, border-color 0.12s, transform 0.08s;

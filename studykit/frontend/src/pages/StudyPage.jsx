@@ -535,7 +535,7 @@ export default function StudyPage() {
                                         )}
                                     </div>
                                 ) : msg.role === 'assistant' ? (
-                                    <MarkdownMessage content={String(msg.content)} />
+                                    <MarkdownMessage isDark={theme === 'dark'}>{String(msg.content)}</MarkdownMessage>
                                 ) : (
                                     <span>{msg.content}</span>
                                 )}

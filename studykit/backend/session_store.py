@@ -309,11 +309,11 @@ class SessionStore:
             .maybe_single()
             .execute()
         )
-        if res.data:
+        if res and res.data:
             logger.info(f"[session] upload context found for session {session_id}")
         else:
             logger.info(f"[session] no upload context found for session {session_id}")
-        return res.data
+        return res.data if res else None
 
     async def append_generation_input(
         self, generation_input_id: UUID, questions: list[Question]
@@ -414,6 +414,7 @@ class SessionStore:
         session_id: UUID,
         questions: list[Question],
         generation_input_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> None:
 
         logger.info(
@@ -433,6 +434,7 @@ class SessionStore:
                 "p_questions": [{**q.model_dump(), "position": i} for i, q in enumerate(questions)],
                 "p_generation_input_id": str(generation_input_id) if generation_input_id else None,
                 "p_topics_covered": topics_covered,
+                "p_user_id": str(user_id) if user_id else None,
             },
         ).execute()
 

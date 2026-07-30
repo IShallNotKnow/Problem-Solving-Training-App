@@ -101,6 +101,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             session_id=ss_id,
             questions=result.questions,
             generation_input_id=upload_context["generation_input_id"] if upload_context else None,
+            user_id=UUID(user_id),
         )
         logger.info(
             f"[worker] generate complete for session {ss_id}: {len(result.questions)} questions, status={result.status}"

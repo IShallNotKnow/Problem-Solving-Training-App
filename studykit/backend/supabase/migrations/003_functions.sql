@@ -65,7 +65,8 @@ CREATE OR REPLACE FUNCTION replace_questions_and_finalize(
     p_session_id          UUID,
     p_questions           JSONB,
     p_generation_input_id UUID    DEFAULT NULL,
-    p_topics_covered      JSONB   DEFAULT NULL
+    p_topics_covered      JSONB   DEFAULT NULL,
+    p_user_id             UUID DEFAULT NULL
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -76,7 +77,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM sessions
         WHERE session_id = p_session_id
-          AND user_id = auth.uid()
+        AND user_id = COALESCE(auth.uid(), p_user_id)
     ) THEN
         RAISE EXCEPTION 'session_not_found_or_forbidden';
     END IF;

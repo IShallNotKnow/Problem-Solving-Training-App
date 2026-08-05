@@ -9,6 +9,8 @@ import LoginPage from './pages/LoginPage.jsx';
 import SignupPage from './pages/SignupPage.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import StudyPage from './pages/StudyPage.jsx';
+import PrivacyPage from './pages/PrivacyPage.jsx';
+import TermsPage from './pages/TermsPage.jsx';
 import { ForgotPasswordPage, ResetPasswordPage } from './pages/ResetPasswordPage.jsx';
 import { ConfigProvider, theme as antTheme } from 'antd';
 import { useTheme } from './context/ThemeContext.jsx';
@@ -37,6 +39,8 @@ function ThemedApp() {
                     <Route path="/signup" element={<SignupPage />} />
                     <Route path="/forgot-password" element={<ForgotPasswordPage />} />
                     <Route path="/reset-password"  element={<ResetPasswordPage />} />
+                    <Route path="/privacy-policy" element={<PrivacyPage />}/>
+                    <Route path="/terms" element={<TermsPage />}/>
 
                     {/* protected */}
                     <Route path="/dashboard" element={

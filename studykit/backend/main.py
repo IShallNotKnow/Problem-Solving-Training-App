@@ -312,6 +312,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 @app.post("/sessions", response_model=SessionSummary, status_code=201)
+@limiter.limit("5/minute")
 async def create_session(
     req: CreateSessionRequest,
     user=Depends(get_current_user),
@@ -402,6 +403,7 @@ async def upload(
 
 
 @app.post("/sessions/{session_id}/reset", response_model=SessionStateDTO)
+@limiter.limit("2/minute")
 async def reset_session(
     session_id: UUID,
     user=Depends(get_current_user),
@@ -485,6 +487,7 @@ async def generation_status(
 
 
 @app.get("/sessions", response_model=list[SessionSummary])
+@limiter.limit("20/minute")
 async def list_sessions(
     user=Depends(get_current_user),
     db: AsyncClient = Depends(get_user_supabase),
@@ -503,6 +506,7 @@ async def list_sessions(
 
 
 @app.get("/sessions/{session_id}", response_model=SessionStateDTO)
+@limiter.limit("20/minute")
 async def get_session(
     session_id: UUID,
     user=Depends(get_current_user),
@@ -529,6 +533,7 @@ async def get_session(
 
 
 @app.delete("/sessions/{session_id}", status_code=204)
+@limiter.limit("50/minute")
 async def delete_session(
     session_id: UUID,
     user=Depends(get_current_user),

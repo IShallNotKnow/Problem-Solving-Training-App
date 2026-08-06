@@ -13,7 +13,13 @@ function SignupPage() {
     const [loading, setLoading] = useState(false);
     const location = useLocation();
     const navigate = useNavigate();
+    const [termsAccepted, setTermsAccepted] = useState(false)
     const { signUp, signInWithGoogle } = useAuth();
+    const canShowSubmit =
+        email.trim() !== '' &&
+        password !== '' &&
+        confirm !== '' &&
+        termsAccepted;
 
     const params = new URLSearchParams(location.search);
     const redirectPage = params.get('redirect') || '/dashboard';
@@ -100,9 +106,41 @@ function SignupPage() {
                             required
                         />
                     </div>
-                    <button className="btn-primary" type="submit" disabled={loading}>
-                        {loading ? 'Creating account...' : 'Create account'}
-                    </button>
+                    <div className="terms-card">
+                        <label className="terms-check" htmlFor="terms">
+                            <div className={`terms-box ${termsAccepted ? 'terms-box--checked' : ''}`}>
+                            {termsAccepted && <span className="terms-tick">✓</span>}
+                            </div>
+                            <input
+                            id="terms"
+                            type="checkbox"
+                            checked={termsAccepted}
+                            required
+                            onChange={(e) => setTermsAccepted(e.target.checked)}
+                            />
+                            <div className="terms-text">
+                            <span className="terms-label">I agree to the terms and privacy policy</span>
+                            <span className="terms-sub">
+                                By creating an account you accept the{' '}
+                                <Link to="/terms" target="_blank">Terms of Service</Link>
+                                {' '}and{' '}
+                                <Link to="/privacy" target="_blank">Privacy Policy</Link>.
+                            </span>
+                            </div>
+                        </label>
+                    </div>
+
+                    {canShowSubmit && (
+                        <>
+                            <button
+                                className="btn-primary"
+                                type="submit"
+                                disabled={loading}
+                            >
+                                {loading ? 'Creating account...' : 'Create account'}
+                            </button>
+                        </>
+                    )}
                 </form>
 
                 <div className="divider">

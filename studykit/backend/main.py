@@ -448,10 +448,10 @@ async def stream_questions(
         await pubsub.subscribe(f"session:{str(session_id)}:questions")
 
         try:
-            state = await session_store.get(session_id)
+            questions = await session_store.get_questions(session_id)
             seen_ids = set()
 
-            for q in state.questions:
+            for q in questions:
                 seen_ids.add(q.question_id)
                 yield f"event: question_approved\ndata: {q.model_dump_json()}\n\n"
 

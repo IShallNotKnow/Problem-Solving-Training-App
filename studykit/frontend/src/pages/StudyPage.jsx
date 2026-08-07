@@ -26,6 +26,7 @@ export default function StudyPage() {
     const [sessionLoading, setSessionLoading] = useState(true);
     const [sessionError, setSessionError] = useState(null);       // full page error state
     const [retryError, setRetryError] = useState(null);           // retry banner error
+    const [generationComplete, setGenerationComplete] = useState(false);
 
     const inputRef = useRef(null);
     const messagesEndRef = useRef(null);
@@ -37,7 +38,7 @@ export default function StudyPage() {
                 const state = await apiFetch(`/sessions/${sessionId}`);
                 setSessionState(state);
 
-                if (state.chat_history?.length > 0) {
+                if (state.chat_history?.length > 0 && state.questions?.length > 0) {
                     const loadedMessages = state.chat_history.map(msg => ({
                         role: msg.role || (msg.type === 'human' ? 'user' : 'assistant'),
                         content: msg.content || msg.text || '',
@@ -181,11 +182,12 @@ export default function StudyPage() {
                         const question = JSON.parse(e.data);
                         questions.push(question);
 
-                        setSessionState(prev => ({
-                            ...prev,
-                            questions: [...questions],
-                            current_question_index: 0,
-                        }));
+                        setSessionState(prev => {
+                            const updatedQuestions = [...prev.questions, question];
+                            return { ...prev, questions: updatedQuestions };
+                        });
+
+                        setMode(prev => prev === 'loading' ? 'answer' : prev);
 
                         if (questions.length === 1) {
                             setMessages(prev => [...prev, {
@@ -203,6 +205,7 @@ export default function StudyPage() {
                             ));
                         }
                     } else if (e.event === 'job_complete') {
+                        setGenerationComplete(true);
                         const { status } = JSON.parse(e.data);
                         controller.abort();
 
@@ -245,6 +248,7 @@ export default function StudyPage() {
     // ── reset + regenerate ────────────────────────────────────
     const handleReset = async () => {
         setLoading(true);
+        setGenerationComplete(false);
         try {
             await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
         } catch (err) {
@@ -311,14 +315,21 @@ export default function StudyPage() {
             const nextIndex = (sessionState?.current_question_index ?? 0) + 1;
             const total = sessionState?.questions?.length ?? 0;
 
-            setSessionState(prev => ({
-                ...prev,
-                current_question_index: nextIndex,
-            }));
-
-            if (nextIndex >= total) {
-                setMode('complete');
+            if (nextIndex < total) {
+                setSessionState(prev => ({
+                    ...prev,
+                    current_question_index: nextIndex,
+                }));
+            } else if (nextIndex >= total) {
+                if (generationComplete) {
+                    setMode('complete');
+                } else {
+                    // more questions still coming — wait
+                    setMode('loading');
+                }
             }
+
+            
         } catch (err) {
             setMessages(prev => [...prev, {
                 role: 'assistant',

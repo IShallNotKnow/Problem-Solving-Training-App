@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 import re
 import unicodedata
+from collections.abc import AsyncGenerator
 
 import httpx
 from dotenv import load_dotenv
@@ -615,7 +616,7 @@ class QuestionGenerator:
         storage_manager: StorageManager,
         session_id: UUID,
         topic_profile: dict | None = None,
-    ) -> GenerationResult:
+    ) -> AsyncGenerator[Question | GenerationResult, None]:
         logger.info(
             f"[generator] starting question generation for session {session_id}, {len(raw_images)} images available, profile={topic_profile is not None}"
         )
@@ -762,6 +763,7 @@ respond.
         MAX_RETRIES = 3
         attempts = 0
         approved_questions: dict[str, Question] = {}
+        newly_approved: list[Question] = []
         validation: list[QuestionValidationResult] = []
         feedback_history: dict[str, str] = {}
         TARGET_MCQ = 10
@@ -974,10 +976,13 @@ respond.
                     )
                     continue
                 approved_questions[q.question_id] = q
+                newly_approved.append(q)
                 if q.question_type == "MCQ":
                     current_mcq += 1
                 else:
                     current_frq += 1
+                for q in newly_approved:
+                    yield q
 
             existing = {r.question_id: r for r in validation}
             for r in new_validation + synthetic_rejections:
@@ -996,7 +1001,7 @@ respond.
             f"[generator] generation complete: {approved_mcq} MCQ + {approved_frq} FRQ, status={'generated' if all_approved else 'failed_validation'}"
         )
 
-        return GenerationResult(
+        yield GenerationResult(
             status=GenerationStatus.GENERATED
             if all_approved
             else GenerationStatus.FAILED_VALIDATION,

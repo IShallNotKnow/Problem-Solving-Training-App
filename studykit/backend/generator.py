@@ -8,7 +8,7 @@ from valkey.asyncio import Valkey
 
 from config import settings
 from exceptions import DatabaseError, SessionNotFoundError
-from models import QuestionDTO
+from models import QuestionDTO, Question, GenerationResult
 from processing import QuestionGenerator
 from session_store import SessionStore
 from storage import StorageManager
@@ -89,9 +89,16 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         await valkey.set(f"job_status:{session_id}", "in_progress", ex=600)
 
         try:
-            result = await question_generator.generate_questions(
+            async for item in question_generator.generate_questions(
                 content, raw_images, storage_manager, ss_id, profile,
-            )
+            ):
+                if isinstance(item, Question):
+                    await valkey.publish(f"session:{session_id}:questions", item.model_dump_json())
+                elif isinstance(item, GenerationResult):
+                    result = item
+
+            if result is None:
+                raise ValueError("Generator completed without returning a result")
         except BadRequestError as e:
             logger.error(f"[worker] OpenAI rejected prompt for session {ss_id}: {e.message}")
             raise ValueError("Content was flagged by the AI service — try different material")

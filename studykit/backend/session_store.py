@@ -454,31 +454,6 @@ class SessionStore:
                 raise SessionNotFoundError(f"Session {session_id} not found") from e
             raise DatabaseError(f"Failed to reset session {session_id}") from e
 
-    async def upsert_questions(self, session_id: UUID, questions: list[Question]) -> None:
-        async def _upsert(question: Question) -> None:
-            logger.info(
-                f"[session] upserting question {question.question_id} for session {session_id}"
-            )
-            await (
-                self.db.table("questions")
-                .upsert(
-                    {**question.model_dump(), "session_id": str(session_id)},
-                    on_conflict="question_id",
-                )
-                .execute()
-            )
-
-        await asyncio.gather(*(_upsert(question) for question in questions))
-
-    async def delete_questions(self, session_id: UUID) -> None:
-        logger.info(f"[session] deleting existing questions for session {session_id}")
-        await (
-            self.db.table("questions")
-            .delete()
-            .eq("session_id", str(session_id))
-            .execute()
-        )
-
     async def finalize_generation(
         self,
         session_id: UUID,
@@ -487,6 +462,17 @@ class SessionStore:
         status: GenerationStatus,
         questions: list[Question],
     ) -> None:
+        res = await (
+            self.db.table("sessions")
+            .select("session_id")
+            .eq("session_id", str(session_id))
+            .eq("user_id", str(user_id))
+            .maybe_single()
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
         logger.info(
             f"[session] finalizing generation for session {session_id}, "
             f"status={status}, generation_input_id={generation_input_id}"
@@ -531,3 +517,16 @@ class SessionStore:
 
         await asyncio.gather(*ops)
         logger.info(f"[session] generation finalized for session {session_id}")
+
+    async def get_questions(self, session_id: UUID) -> list[Question]:
+        try:
+            res = await (
+                self.db.table("questions")
+                .select("*")
+                .eq("session_id", str(session_id))
+                .order("position")
+                .execute()
+            )
+            return [Question(**q) for q in res.data]
+        except Exception as e:
+            raise DatabaseError(f"Failed to fetch questions for session {session_id}") from e

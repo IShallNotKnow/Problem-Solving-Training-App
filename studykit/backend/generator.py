@@ -93,6 +93,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
                 content, raw_images, storage_manager, ss_id, profile,
             ):
                 if isinstance(item, Question):
+                    logger.info(f"[worker] publishing question {item.question_id} mid-generation")
                     await valkey.publish(f"session:{session_id}:questions", item.model_dump_json())
                 elif isinstance(item, GenerationResult):
                     result = item

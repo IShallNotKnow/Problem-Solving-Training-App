@@ -981,14 +981,15 @@ respond.
                     current_mcq += 1
                 else:
                     current_frq += 1
-                for q in newly_approved:
-                    yield q
 
             existing = {r.question_id: r for r in validation}
             for r in new_validation + synthetic_rejections:
                 existing[r.question_id] = r
             validation = list(existing.values())
             feedback_history = this_round_feedback
+            for q in newly_approved:
+                yield q
+            
             attempts += 1
             logger.info(
                 f"[generator] end of attempt {attempts}: {current_mcq} MCQ + {current_frq} FRQ approved so far"

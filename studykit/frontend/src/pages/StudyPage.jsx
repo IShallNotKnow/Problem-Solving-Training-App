@@ -208,7 +208,6 @@ export default function StudyPage() {
                     } else if (e.event === 'job_complete') {
                         setGenerationComplete(true);
                         const { status } = JSON.parse(e.data);
-                        controller.abort();
 
                         if (questions.length === 0) {
                             setMode('idle');
@@ -227,16 +226,18 @@ export default function StudyPage() {
                             ));
                         }
                         resolve();
+                        controller.abort();
                     }
                 },
 
                 onerror(err) {
-                    console.error('SSE error:', err);
-
                     if (controller.signal.aborted) {
                         resolve(); // intentional abort from job_complete, not a real error
                         return;
                     }
+
+                    
+                    console.error('SSE error:', err);
                     // Only reject if we got nothing — if we have some questions
                     // the job may have finished and closed the connection normally
                     if (questions.length === 0) {

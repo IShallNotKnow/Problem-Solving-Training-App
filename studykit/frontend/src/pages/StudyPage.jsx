@@ -159,8 +159,7 @@ export default function StudyPage() {
     const streamGeneration = (sessionId, jobId) => {
         return new Promise((resolve, reject) => {
             const source = new EventSource(
-                `https://api.studykit.dev/sessions/${sessionId}/stream`,
-                { withCredentials: true }
+                `https://api.studykit.dev/sessions/${sessionId}/stream`
             );
 
             const questions = [];

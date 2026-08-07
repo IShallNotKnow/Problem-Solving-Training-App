@@ -4,8 +4,8 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const getAccessToken = async () => {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!accessToken) throw new Error('No active session');
-    return accessToken;
+    if (!session?.access_token) throw new Error('No active session');
+    return session.access_token;
 };
 
 export const apiFetch = async (path, options = {}) => {

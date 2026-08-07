@@ -414,3 +414,39 @@ html,
     padding-bottom: 2px;
 }
 .md-body .katex { font-size: 1.03em; }
+
+.footer {
+    margin-top: auto;
+    border-top: 1px solid var(--border);
+    padding: 24px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.875rem;
+    color: var(--text);
+    text-align: left;
+}
+
+.footer p {
+    color: var(--text);
+}
+
+.footer nav {
+    display: flex;
+}
+
+.footer nav a {
+    color: var(--text);
+    text-decoration: none;
+    padding: 0 16px;
+    border-left: 1px solid var(--border);
+    transition: color 0.2s;
+}
+
+.footer nav a:first-child {
+    border-left: none;
+}
+
+.footer nav a:hover {
+    color: var(--text-h);
+}

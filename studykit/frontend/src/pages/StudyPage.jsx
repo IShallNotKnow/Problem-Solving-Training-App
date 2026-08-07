@@ -163,7 +163,7 @@ export default function StudyPage() {
             const questions = [];
             const controller = new AbortController();
 
-            await fetchEventSource(
+            fetchEventSource(
                 `https://api.studykit.dev/sessions/${sessionId}/stream`, {
                 headers: {
                     'Authorization': `Bearer ${token}`,

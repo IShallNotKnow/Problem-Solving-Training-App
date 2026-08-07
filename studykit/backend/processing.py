@@ -763,13 +763,13 @@ respond.
         MAX_RETRIES = 3
         attempts = 0
         approved_questions: dict[str, Question] = {}
-        newly_approved: list[Question] = []
         validation: list[QuestionValidationResult] = []
         feedback_history: dict[str, str] = {}
         TARGET_MCQ = 10
         TARGET_FRQ = 10
 
         while attempts < MAX_RETRIES:
+            newly_approved: list[Question] = []
             approved_mcq = sum(1 for q in approved_questions.values() if q.question_type == "MCQ")
             approved_frq = sum(1 for q in approved_questions.values() if q.question_type == "FRQ")
             need_mcq = TARGET_MCQ - approved_mcq

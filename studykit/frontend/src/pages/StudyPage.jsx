@@ -131,19 +131,33 @@ export default function StudyPage() {
     };
 
     const handleGenerate = async (sessionId, label, rawMarkdown) => {
+        console.log('[generate] handleGenerate called', { sessionId });
+        
+        // Abort any existing stream
+        if (controllerRef.current) {
+            console.log('[generate] aborting existing stream before new generation');
+            controllerRef.current.abort();
+            controllerRef.current = null;
+        }
+
         setLoading(true);
         setRetryError(null);
 
         try {
+            console.log('[generate] enqueuing job');
             const { job_id } = await apiFetch(`/sessions/${sessionId}/generate`, {
                 method: 'POST',
                 body: JSON.stringify({ label, raw_markdown: rawMarkdown }),
             });
+            console.log('[generate] job enqueued', { job_id });
 
             const token = await getAccessToken();
+            console.log('[generate] opening stream');
             await streamGeneration(sessionId, token, label, rawMarkdown);
+            console.log('[generate] stream resolved');
+
         } catch (err) {
-            console.error('Generation error:', err);
+            console.error('[generate] caught error', err);
             setRetryError({
                 message: err.status < 500
                     ? err.message
@@ -160,10 +174,14 @@ export default function StudyPage() {
     };
 
     const streamGeneration = (sessionId, token, label, rawMarkdown) => {
-        console.log('streamGeneration called', sessionId);
+        console.log('[stream] streamGeneration called', { sessionId });
+        
         return new Promise((resolve, reject) => {
             const questions = [];
             const controller = new AbortController();
+            controllerRef.current = controller;
+
+            console.log('[stream] opening fetchEventSource');
 
             fetchEventSource(
                 `https://api.studykit.dev/sessions/${sessionId}/stream`, {
@@ -172,21 +190,29 @@ export default function StudyPage() {
                     'Accept': 'text/event-stream',
                 },
                 signal: controller.signal,
+
                 onopen(response) {
+                    console.log('[stream] onopen', { status: response.status, ok: response.ok });
                     if (!response.ok) {
                         throw new Error(`Stream failed: ${response.status}`);
                     }
                 },
 
                 onmessage(e) {
+                    console.log('[stream] onmessage', { event: e.event, dataLength: e.data?.length });
+                    
                     if (e.event === 'question_approved') {
                         const question = JSON.parse(e.data);
                         questions.push(question);
-
-                        setSessionState(prev => {
-                            const updatedQuestions = [...prev.questions, question];
-                            return { ...prev, questions: updatedQuestions };
+                        console.log('[stream] question received', { 
+                            question_id: question.question_id, 
+                            total: questions.length 
                         });
+
+                        setSessionState(prev => ({
+                            ...prev,
+                            questions: [...prev.questions, question],
+                        }));
 
                         setMode(prev => prev === 'loading' ? 'answer' : prev);
 
@@ -205,7 +231,9 @@ export default function StudyPage() {
                                     : msg
                             ));
                         }
+
                     } else if (e.event === 'job_complete') {
+                        console.log('[stream] job_complete received', { questionsReceived: questions.length });
                         setGenerationComplete(true);
                         const { status } = JSON.parse(e.data);
 
@@ -225,21 +253,26 @@ export default function StudyPage() {
                                     : msg
                             ));
                         }
+
                         resolve();
+                        console.log('[stream] resolved, aborting controller');
                         controller.abort();
                     }
                 },
 
                 onerror(err) {
+                    console.error('[stream] onerror', { 
+                        name: err?.name, 
+                        message: err?.message,
+                        aborted: controller.signal.aborted,
+                        questionsReceived: questions.length,
+                    });
+
                     if (controller.signal.aborted) {
-                        resolve(); // intentional abort from job_complete, not a real error
+                        resolve();
                         return;
                     }
 
-                    
-                    console.error('SSE error:', err);
-                    // Only reject if we got nothing — if we have some questions
-                    // the job may have finished and closed the connection normally
                     if (questions.length === 0) {
                         reject(new Error('Stream disconnected before any questions arrived'));
                     } else {

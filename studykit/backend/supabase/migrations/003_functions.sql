@@ -77,7 +77,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM sessions
         WHERE session_id = p_session_id
-        AND user_id = COALESCE(auth.uid(), p_user_id)
+        AND user_id = p_user_id
     ) THEN
         RAISE EXCEPTION 'session_not_found_or_forbidden';
     END IF;

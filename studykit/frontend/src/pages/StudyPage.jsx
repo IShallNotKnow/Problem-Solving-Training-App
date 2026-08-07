@@ -141,6 +141,7 @@ export default function StudyPage() {
             await streamGeneration(sessionId, job_id);
 
         } catch (err) {
+            console.error('Generation error:', err);
             setRetryError({
                 message: err.status < 500
                     ? err.message
@@ -222,6 +223,7 @@ export default function StudyPage() {
             });
 
             source.addEventListener('error', (e) => {
+                console.error('SSE error event:', e, 'readyState:', source.readyState, 'questions so far:', questions.length);
                 source.close();
                 // Only reject if we got nothing — if we have some questions
                 // the job may have finished and closed the connection normally

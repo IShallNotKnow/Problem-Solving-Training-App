@@ -4,6 +4,7 @@ import { useTheme } from '../context/ThemeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
 import { apiFetch, apiUpload } from '../utils/api.js';
 import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
+import { fetchEventSource } from '@microsoft/fetch-event-source';
 import MarkdownMessage from '../components/MarkdownMessage.jsx';
 import { IoSend } from 'react-icons/io5';
 import { Switch } from 'antd';
@@ -159,79 +160,83 @@ export default function StudyPage() {
 
     const streamGeneration = (sessionId, jobId) => {
         return new Promise((resolve, reject) => {
-            const source = new EventSource(
-                `https://api.studykit.dev/sessions/${sessionId}/stream`
-            );
-
             const questions = [];
+            const controller = new AbortController();
 
-            source.addEventListener('question_approved', (e) => {
-                const question = JSON.parse(e.data);
-                questions.push(question);
+            await fetchEventSource(
+                `https://api.studykit.dev/sessions/${sessionId}/stream`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'text/event-stream',
+                },
+                signal: controller.signal,
+                onopen(response) {
+                    if (!response.ok) {
+                        throw new Error(`Stream failed: ${response.status}`);
+                    }
+                },
 
-                // Update UI as each question arrives
-                setSessionState(prev => ({
-                    ...prev,
-                    questions: [...questions],
-                    current_question_index: 0,
-                }));
+                onmessage(e) {
+                    if (e.event === 'question_approved') {
+                        const question = JSON.parse(e.data);
+                        questions.push(question);
 
-                // Show questions panel as soon as first one arrives
-                if (questions.length === 1) {
-                    setMessages(prev => [...prev, {
-                        role: 'assistant',
-                        content: questions,
-                        type: 'questions',
-                        partial: true,  // still loading
-                    }]);
-                    setMode('answer');
-                } else {
-                    // Update the existing questions message in place
-                    setMessages(prev => prev.map(msg =>
-                        msg.type === 'questions'
-                            ? { ...msg, content: [...questions] }
-                            : msg
-                    ));
-                }
-            });
+                        setSessionState(prev => ({
+                            ...prev,
+                            questions: [...questions],
+                            current_question_index: 0,
+                        }));
 
-            source.addEventListener('job_complete', (e) => {
-                const { status } = JSON.parse(e.data);
-                source.close();
+                        if (questions.length === 1) {
+                            setMessages(prev => [...prev, {
+                                role: 'assistant',
+                                content: questions,
+                                type: 'questions',
+                                partial: true,
+                            }]);
+                            setMode('answer');
+                        } else {
+                            setMessages(prev => prev.map(msg =>
+                                msg.type === 'questions'
+                                    ? { ...msg, content: [...questions] }
+                                    : msg
+                            ));
+                        }
+                    } else if (e.event === 'job_complete') {
+                        const { status } = JSON.parse(e.data);
+                        controller.abort();
 
-                if (questions.length === 0) {
-                    setSessionState(prev => ({ ...prev, questions: [], current_question_index: 0 }));
-                    setMode('idle');
-                    setRetryError({
-                        message: "Couldn't build questions from this material. Try a different file or add more detail.",
-                        onRetry: () => {
-                            setRetryError(null);
-                            handleGenerate(sessionId, label, rawMarkdown);
-                        },
-                    });
-                    return resolve();
-                }
+                        if (questions.length === 0) {
+                            setMode('idle');
+                            setRetryError({
+                                message: "Couldn't build questions from this material.",
+                                onRetry: () => {
+                                    setRetryError(null);
+                                    handleGenerate(sessionId, label, rawMarkdown);
+                                },
+                            });
+                        } else {
+                            setMessages(prev => prev.map(msg =>
+                                msg.type === 'questions'
+                                    ? { ...msg, content: [...questions], partial: status === 'failed_validation' }
+                                    : msg
+                            ));
+                        }
+                        resolve();
+                    }
+                },
 
-                // Mark questions as complete, no longer partial
-                setMessages(prev => prev.map(msg =>
-                    msg.type === 'questions'
-                        ? { ...msg, content: [...questions], partial: status === 'failed_validation' }
-                        : msg
-                ));
-
-                resolve();
-            });
-
-            source.addEventListener('error', (e) => {
-                console.error('SSE error event:', e, 'readyState:', source.readyState, 'questions so far:', questions.length);
-                source.close();
-                // Only reject if we got nothing — if we have some questions
-                // the job may have finished and closed the connection normally
-                if (questions.length === 0) {
-                    reject(new Error('Stream disconnected before any questions arrived'));
-                } else {
-                    resolve();
-                }
+                onerror(err) {
+                    console.error('SSE error event:', e, 'readyState:', source.readyState, 'questions so far:', questions.length);
+                    source.close();
+                    // Only reject if we got nothing — if we have some questions
+                    // the job may have finished and closed the connection normally
+                    if (questions.length === 0) {
+                        reject(new Error('Stream disconnected before any questions arrived'));
+                    } else {
+                        resolve();
+                    }
+                },
             });
         });
     };

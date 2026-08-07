@@ -139,8 +139,12 @@ export default function StudyPage() {
                 body: JSON.stringify({ label, raw_markdown: rawMarkdown }),
             });
 
-            await streamGeneration(sessionId, job_id);
+            const { data: { session } } = await supabase.auth.getSession();
+            const token = session?.access_token;
 
+            if (!token) throw new Error('No active session');
+
+            await streamGeneration(sessionId, token, label, rawMarkdown);
         } catch (err) {
             console.error('Generation error:', err);
             setRetryError({
@@ -158,7 +162,7 @@ export default function StudyPage() {
         }
     };
 
-    const streamGeneration = (sessionId, jobId) => {
+    const streamGeneration = (sessionId, token, label, rawMarkdown) => {
         return new Promise((resolve, reject) => {
             const questions = [];
             const controller = new AbortController();

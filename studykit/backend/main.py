@@ -440,10 +440,10 @@ async def stream_questions(
     user = Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
     valkey: Valkey = request.app.state.valkey
 
     async def generate():
-        await session_store.verify_ownership(session_id, UUID(user["sub"]))
         pubsub = valkey.pubsub()
         await pubsub.subscribe(f"session:{str(session_id)}:questions")
 

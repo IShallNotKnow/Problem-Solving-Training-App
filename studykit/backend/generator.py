@@ -88,14 +88,6 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         content = upload_context["content"] if upload_context else job["raw_markdown"]
         await valkey.set(f"job_status:{session_id}", "in_progress", ex=600)
 
-        async def on_question_approved(q):
-            await session_store.upsert_question(ss_id, q)   # storage first
-            await valkey.publish(                               # then notify
-                f"session:{session_id}:questions",
-                q.model_dump_json(),
-            )
-            logger.info(f"[worker] published question {q.question_id} to channel")
-
         try:
             result = await question_generator.generate_questions(
                 content, raw_images, storage_manager, ss_id, profile,

@@ -125,48 +125,21 @@ export default function StudyPage() {
         }
 
         // captured in closure so retry can call without re-uploading
-        await handleGenerateAndPoll(sessionId, label, currentFile ? '' : currentInput);
+        await handleGenerate(sessionId, label, currentFile ? '' : currentInput);
     };
 
-    const handleGenerateAndPoll = async (sessionId, label, rawMarkdown) => {
+    const handleGenerate = async (sessionId, label, rawMarkdown) => {
         setLoading(true);
+        setRetryError(null);
+
         try {
             const { job_id } = await apiFetch(`/sessions/${sessionId}/generate`, {
                 method: 'POST',
                 body: JSON.stringify({ label, raw_markdown: rawMarkdown }),
             });
 
-            const result = await pollGeneration(sessionId, job_id);
-            const questions = Array.isArray(result?.questions) ? result.questions : [];
+            await streamGeneration(sessionId, job_id);
 
-            if (questions.length === 0) {
-                // Validation terminated early with nothing usable — stay in idle so the
-                // user can retry or supply different material, instead of an empty study view.
-                setSessionState(prev => ({ ...prev, questions: [], current_question_index: 0 }));
-                setMode('idle');
-                setRetryError({
-                    message: "Couldn't build questions from this material. Try a different file or add more detail.",
-                    onRetry: () => {
-                        setRetryError(null);
-                        handleGenerateAndPoll(sessionId, label, rawMarkdown);
-                    },
-                });
-                return;
-            }
-
-            setSessionState(prev => ({
-                ...prev,
-                questions,
-                current_question_index: 0,
-            }));
-            setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: questions,
-                type: 'questions',
-                partial: result?.status === 'failed_validation',
-            }]);
-            setMode('answer');
-            setRetryError(null);
         } catch (err) {
             setRetryError({
                 message: err.status < 500
@@ -174,7 +147,7 @@ export default function StudyPage() {
                     : 'Generation failed — please try again.',
                 onRetry: () => {
                     setRetryError(null);
-                    handleGenerateAndPoll(sessionId, label, rawMarkdown);
+                    handleGenerate(sessionId, label, rawMarkdown);
                 },
             });
         } finally {
@@ -183,19 +156,84 @@ export default function StudyPage() {
         }
     };
 
-    async function pollGeneration(sessionId, jobId, intervalMs = 2000, maxWaitMs = 180000) {
-        const deadline = Date.now() + maxWaitMs;
-        while (Date.now() < deadline) {
-            await new Promise(r => setTimeout(r, intervalMs));
-            const data = await apiFetch(`/sessions/${sessionId}/generate/${jobId}`);
+    const streamGeneration = (sessionId, jobId) => {
+        return new Promise((resolve, reject) => {
+            const source = new EventSource(
+                `/sessions/${sessionId}/stream`,
+                { withCredentials: true }
+            );
 
-            if (data.status === 'generated') return data;           // GenerationResultDTO
-            if (data.status === 'failed_validation') return data;   // has questions, but flagged
-            if (data.status === 'error') throw new Error(data.message || 'Generation failed');
-            // 'queued' or 'in_progress' → keep polling
-        }
-        throw new Error('Generation timed out — please try again.');
-    }
+            const questions = [];
+
+            source.addEventListener('question_approved', (e) => {
+                const question = JSON.parse(e.data);
+                questions.push(question);
+
+                // Update UI as each question arrives
+                setSessionState(prev => ({
+                    ...prev,
+                    questions: [...questions],
+                    current_question_index: 0,
+                }));
+
+                // Show questions panel as soon as first one arrives
+                if (questions.length === 1) {
+                    setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        content: questions,
+                        type: 'questions',
+                        partial: true,  // still loading
+                    }]);
+                    setMode('answer');
+                } else {
+                    // Update the existing questions message in place
+                    setMessages(prev => prev.map(msg =>
+                        msg.type === 'questions'
+                            ? { ...msg, content: [...questions] }
+                            : msg
+                    ));
+                }
+            });
+
+            source.addEventListener('job_complete', (e) => {
+                const { status } = JSON.parse(e.data);
+                source.close();
+
+                if (questions.length === 0) {
+                    setSessionState(prev => ({ ...prev, questions: [], current_question_index: 0 }));
+                    setMode('idle');
+                    setRetryError({
+                        message: "Couldn't build questions from this material. Try a different file or add more detail.",
+                        onRetry: () => {
+                            setRetryError(null);
+                            handleGenerate(sessionId, label, rawMarkdown);
+                        },
+                    });
+                    return resolve();
+                }
+
+                // Mark questions as complete, no longer partial
+                setMessages(prev => prev.map(msg =>
+                    msg.type === 'questions'
+                        ? { ...msg, content: [...questions], partial: status === 'failed_validation' }
+                        : msg
+                ));
+
+                resolve();
+            });
+
+            source.addEventListener('error', (e) => {
+                source.close();
+                // Only reject if we got nothing — if we have some questions
+                // the job may have finished and closed the connection normally
+                if (questions.length === 0) {
+                    reject(new Error('Stream disconnected before any questions arrived'));
+                } else {
+                    resolve();
+                }
+            });
+        });
+    };
 
     // ── reset + regenerate ────────────────────────────────────
     const handleReset = async () => {
@@ -211,7 +249,7 @@ export default function StudyPage() {
             return;
         }
         // /generate is asynchronous (202 + job_id) — must poll, not read questions directly.
-        await handleGenerateAndPoll(sessionId, sessionState?.label ?? 'Study set', '');
+        await handleGenerate(sessionId, sessionState?.label ?? 'Study set', '');
     };
 
     // ── answer ────────────────────────────────────────────────

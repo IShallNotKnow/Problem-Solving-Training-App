@@ -160,6 +160,7 @@ export default function StudyPage() {
     };
 
     const streamGeneration = (sessionId, token, label, rawMarkdown) => {
+        console.log('streamGeneration called', sessionId);
         return new Promise((resolve, reject) => {
             const questions = [];
             const controller = new AbortController();
@@ -232,7 +233,10 @@ export default function StudyPage() {
                 onerror(err) {
                     console.error('SSE error:', err);
 
-                    if (controller.signal.aborted) return;
+                    if (controller.signal.aborted) {
+                        resolve(); // intentional abort from job_complete, not a real error
+                        return;
+                    }
                     // Only reject if we got nothing — if we have some questions
                     // the job may have finished and closed the connection normally
                     if (questions.length === 0) {

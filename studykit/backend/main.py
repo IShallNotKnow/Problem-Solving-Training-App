@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
         SUPABASE_SERVICE_ROLE_KEY,
         options=AsyncClientOptions(httpx_client=app.state.http),
     )
-    app.state.valkey = await Valkey.from_url(settings.valkey_url)
+    app.state.valkey = await Valkey.from_url(settings.valkey_url, decode_responses=True)
 
     app.state.arq = await create_pool(REDIS_SETTINGS)
     logger.info("Startup complete")

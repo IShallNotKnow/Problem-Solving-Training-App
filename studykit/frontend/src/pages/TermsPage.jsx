@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { FiArrowLeft } from 'react-icons/fi';
 import './LegalPages.css';
 
-const LAST_UPDATED = '4 August 2026';
+const LAST_UPDATED = '6 August 2026';
 const CONTACT_EMAIL = 'legal@studykit.dev';
 
 const sections = [

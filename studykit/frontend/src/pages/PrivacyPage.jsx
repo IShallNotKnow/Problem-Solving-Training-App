@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { FiArrowLeft } from 'react-icons/fi';
 import './LegalPages.css';
 
-const LAST_UPDATED = '4 August 2026';
+const LAST_UPDATED = '6 August 2026';
 const CONTACT_EMAIL = 'privacy@studykit.dev';
 
 const sections = [
@@ -46,6 +46,7 @@ const sections = [
                     <li><strong>Usage data</strong> — your IP address (used for rate limiting), browser type, and interaction timestamps.</li>
                 </ul>
                 <p>We do not collect your name, phone number, postal address, or payment information. We do not use cookies for tracking or advertising purposes. We use only functional session tokens issued by Supabase Auth.</p>
+                <p>We use Cloudflare Web Analytics to understand how visitors use our website. Cloudflare may collect aggregated usage information such as page views, browser type, operating system, referrer, and performance metrics. This information is used to improve our website and services. For more information, see Cloudflare's privacy policy.</p>
             </>
         ),
     },

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
-import { apiFetch, apiUpload } from '../utils/api.js';
+import { getAccessToken, apiFetch, apiUpload } from '../utils/api.js';
 import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import MarkdownMessage from '../components/MarkdownMessage.jsx';
@@ -139,11 +139,7 @@ export default function StudyPage() {
                 body: JSON.stringify({ label, raw_markdown: rawMarkdown }),
             });
 
-            const { data: { session } } = await supabase.auth.getSession();
-            const token = session?.access_token;
-
-            if (!token) throw new Error('No active session');
-
+            const token = await getAccessToken();
             await streamGeneration(sessionId, token, label, rawMarkdown);
         } catch (err) {
             console.error('Generation error:', err);

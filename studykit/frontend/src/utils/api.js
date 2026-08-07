@@ -2,15 +2,21 @@ import { supabase } from './supabase.js';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
-export const apiFetch = async (path, options = {}) => {
+export const getAccessToken = async () => {
     const { data: { session } } = await supabase.auth.getSession();
+    if (!accessToken) throw new Error('No active session');
+    return accessToken;
+};
+
+export const apiFetch = async (path, options = {}) => {
+    const accessToken = await getAccessToken();
 
     const res = await fetch(`${BASE_URL}${path}`, {
         ...options,
         headers: {
             'Content-Type': 'application/json',
-            ...(session?.access_token && {
-                'Authorization': `Bearer ${session.access_token}`,
+            ...(accessToken && {
+                'Authorization': `Bearer ${accessToken}`,
             }),
             ...options.headers,
         },
@@ -30,13 +36,13 @@ export const apiFetch = async (path, options = {}) => {
 };
 
 export const apiUpload = async (path, formData) => {
-    const { data: { session } } = await supabase.auth.getSession();
+    const accessToken = await getAccessToken();
 
     const res = await fetch(`${BASE_URL}${path}`, {
         method: 'POST',
         headers: {
-            ...(session?.access_token && {
-                'Authorization': `Bearer ${session.access_token}`,
+            ...(accessToken && {
+                'Authorization': `Bearer ${accessToken}`,
             }),
         },
         body: formData,

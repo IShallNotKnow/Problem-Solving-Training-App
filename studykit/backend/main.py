@@ -3,6 +3,7 @@ import logging
 import traceback
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
+import json
 
 import httpx
 from arq import create_pool
@@ -432,6 +433,76 @@ async def reset_session(
         chat_history=state.chat_history,
     )
 
+@app.get("/sessions/{session_id}/stream")
+async def stream_questions(
+    session_id: UUID,
+    request: Request,
+    user = Depends(get_current_user),
+    session_store: SessionStore = Depends(get_session_store),
+):
+    valkey: Valkey = request.app.state.valkey
+
+    async def generate():
+        await session_store.verify_ownership(session_id, UUID(user["sub"]))
+        pubsub = valkey.pubsub()
+        await pubsub.subscribe(f"session:{str(session_id)}:questions")
+
+        try:
+            state = await session_store.get(session_id)
+            seen_ids = set()
+
+            for q in state.questions:
+                seen_ids.add(q.question_id)
+                yield f"event: question_approved\ndata: {q.model_dump_json()}\n\n"
+
+            status = await valkey.get(f"job_status:{str(session_id)}")
+            if status and status.decode() in ("generated", "failed_validation", "failed"):
+                yield f"event: job_complete\ndata: {json.dumps({'status': status.decode()})}\n\n"
+                return
+
+            last_status_check = asyncio.get_event_loop().time()
+            STATUS_CHECK_INTERVAL = 3.0
+
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    message = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    message = None
+
+                if message:
+                    q_data = json.loads(message["data"])
+                    q_id = q_data["question_id"]
+
+                    if q_id not in seen_ids:
+                        seen_ids.add(q_id)
+                        yield f"event: question_approved\ndata: {message['data']}\n\n"
+
+                # Check terminal status periodically and on every message
+                now = asyncio.get_event_loop().time()
+                if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
+                    status = await valkey.get(f"job_status:{str(session_id)}")
+                    last_status_check = now
+                    if status and status.decode() in ("generated", "failed_validation", "failed"):
+                        yield f"event: job_complete\ndata: {json.dumps({'status': status.decode()})}\n\n"
+                        break
+
+        finally:
+            await pubsub.unsubscribe(f"session:{str(session_id)}:questions")
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 @app.post("/sessions/{session_id}/generate", status_code=202)
 @limiter.limit("2/minute")
@@ -449,44 +520,27 @@ async def generate(
     if existing:
         return {"job_id": existing.decode(), "status": "pending"}
 
+    lock = await app.state.valkey.set(
+        f"active_job:{session_id}",
+        "pending",  # placeholder until we have the real job_id
+        nx=True,    # only set if not exists
+        ex=3600,
+    )
+    if not lock:
+        existing = await app.state.valkey.get(f"active_job:{session_id}")
+        return {"job_id": existing.decode(), "status": "pending"}
+
     job = await app.state.arq.enqueue_job(
         "generate_questions_task",
         str(session_id),
         {"jwt": jwt, "user_id": user["sub"], "raw_markdown": req.raw_markdown, "label": req.label},
     )
+    if job is None:
+        await app.state.valkey.delete(f"active_job:{session_id}")
+        raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
     await app.state.valkey.set(f"active_job:{session_id}", job.job_id, ex=3600)
     return {"job_id": job.job_id, "status": "pending"}
-
-
-@app.get("/sessions/{session_id}/generate/{job_id}", response_model=GenerationResultDTO)
-async def generation_status(
-    session_id: UUID,
-    job_id: str,
-    user=Depends(get_current_user),
-    session_store: SessionStore = Depends(get_session_store),
-):
-    await session_store.verify_ownership(session_id, UUID(user["sub"]))
-
-    job = Job(job_id, app.state.arq)
-    status = await job.status()
-
-    if status == JobStatus.not_found:
-        raise HTTPException(404, "Job not found or expired")
-
-    if status == JobStatus.complete:
-        try:
-            result_info = await job.result_info()
-        except DeserializationError:
-            # stale result from before serialization fixes — treat as expired
-            logger.warning(f"[endpoint] stale job result for {job_id}, cannot deserialize")
-            raise HTTPException(404, "Job result expired — please regenerate")
-        if result_info is None:
-            raise HTTPException(500, "Job completed but result unavailable")
-        if not result_info.success:
-            raise HTTPException(500, str(result_info.result))
-        return GenerationResultDTO(**result_info.result)
-
-    return JSONResponse(status_code=202, content={"job_id": job_id, "status": status.value})
 
 
 @app.get("/sessions", response_model=list[SessionSummary])

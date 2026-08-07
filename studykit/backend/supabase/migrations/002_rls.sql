@@ -56,6 +56,33 @@ CREATE POLICY "questions_select_own" ON questions
               AND sessions.user_id = auth.uid()
         )
     );
+
+CREATE POLICY "questions_insert_own" ON questions
+    FOR INSERT TO appuser
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM sessions
+            WHERE sessions.session_id = questions.session_id
+              AND sessions.user_id = auth.uid()
+        )
+    );
+ 
+CREATE POLICY "questions_update_own" ON questions
+    FOR UPDATE TO appuser
+    USING (
+        EXISTS (
+            SELECT 1 FROM sessions
+            WHERE sessions.session_id = questions.session_id
+              AND sessions.user_id = auth.uid()
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM sessions
+            WHERE sessions.session_id = questions.session_id
+              AND sessions.user_id = auth.uid()
+        )
+    );
  
  
 -- =============================================================================

@@ -15,6 +15,8 @@ class CreateSessionRequest(BaseModel):
 
 
 class GenerationStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
     GENERATED = "generated"
     FAILED_VALIDATION = "failed_validation"
 

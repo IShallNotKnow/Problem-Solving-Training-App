@@ -12,6 +12,7 @@ from models import (
     SessionState,
     TopicStats,
     TopicUpdate,
+    GenerationStatus,
 )
 from supabase import AsyncClient
 
@@ -452,3 +453,81 @@ class SessionStore:
             if "session_not_found" in str(e):
                 raise SessionNotFoundError(f"Session {session_id} not found") from e
             raise DatabaseError(f"Failed to reset session {session_id}") from e
+
+    async def upsert_questions(self, session_id: UUID, questions: list[Question]) -> None:
+        async def _upsert(question: Question) -> None:
+            logger.info(
+                f"[session] upserting question {question.question_id} for session {session_id}"
+            )
+            await (
+                self.db.table("questions")
+                .upsert(
+                    {**question.model_dump(), "session_id": str(session_id)},
+                    on_conflict="question_id",
+                )
+                .execute()
+            )
+
+        await asyncio.gather(*(_upsert(question) for question in questions))
+
+    async def delete_questions(self, session_id: UUID) -> None:
+        logger.info(f"[session] deleting existing questions for session {session_id}")
+        await (
+            self.db.table("questions")
+            .delete()
+            .eq("session_id", str(session_id))
+            .execute()
+        )
+
+    async def finalize_generation(
+        self,
+        session_id: UUID,
+        generation_input_id: UUID | None,
+        user_id: UUID,
+        status: GenerationStatus,
+        questions: list[Question],
+    ) -> None:
+        logger.info(
+            f"[session] finalizing generation for session {session_id}, "
+            f"status={status}, generation_input_id={generation_input_id}"
+        )
+
+        topics_covered = (
+            list({t for q in questions for t in q.topic_difficulties})
+            if generation_input_id is not None
+            else None
+        )
+
+        # Reset index and mark generation complete — questions already in DB
+        ops = [
+            self.db.table("sessions")
+            .update({
+                "current_question_index": 0,
+                "last_active_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("session_id", str(session_id))
+            .execute()
+        ]
+
+        if generation_input_id is not None:
+            ops.append(
+                self.db.table("generation_inputs")
+                .update({"questions_generated": True})
+                .eq("generation_input_id", str(generation_input_id))
+                .execute()
+            )
+            if topics_covered:
+                ops.append(
+                    self.db.table("generation_topics")
+                    .insert([
+                        {
+                            "generation_input_id": str(generation_input_id),
+                            "topic": topic,
+                        }
+                        for topic in topics_covered
+                    ])
+                    .execute()
+                )
+
+        await asyncio.gather(*ops)
+        logger.info(f"[session] generation finalized for session {session_id}")

@@ -86,10 +86,19 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             raise ValueError("No upload context found and no markdown provided")
 
         content = upload_context["content"] if upload_context else job["raw_markdown"]
+        await valkey.set(f"job_status:{session_id}", "in_progress", ex=600)
+
+        async def on_question_approved(q):
+            await session_store.upsert_question(ss_id, q)   # storage first
+            await valkey.publish(                               # then notify
+                f"session:{session_id}:questions",
+                q.model_dump_json(),
+            )
+            logger.info(f"[worker] published question {q.question_id} to channel")
 
         try:
             result = await question_generator.generate_questions(
-                content, raw_images, storage_manager, ss_id, profile
+                content, raw_images, storage_manager, ss_id, profile,
             )
         except BadRequestError as e:
             logger.error(f"[worker] OpenAI rejected prompt for session {ss_id}: {e.message}")
@@ -97,12 +106,22 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         if not result.questions:
             raise ValueError("No questions could be generated from this content")
 
+        # Publish approved questions for any connected SSE clients
+        for q in result.questions:
+            await valkey.publish(
+                f"session:{str(ss_id)}:questions",
+                QuestionDTO.model_validate(q, from_attributes=True).model_dump_json()
+            )
+
         await session_store.replace_questions_and_finalize(
             session_id=ss_id,
             questions=result.questions,
             generation_input_id=upload_context["generation_input_id"] if upload_context else None,
             user_id=UUID(user_id),
         )
+
+        await valkey.set(f"job_status:{session_id}", result.status.value, ex=3600)
+
         logger.info(
             f"[worker] generate complete for session {ss_id}: {len(result.questions)} questions, status={result.status}"
         )
@@ -116,6 +135,11 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             "validation": [v.model_dump() for v in result.validation],
             "message": result.message,
         }
+    
+    except Exception:
+        # Make sure SSE endpoint isn't left hanging on failure
+        await valkey.set(f"job_status:{session_id}", "failed", ex=3600)
+        raise
 
     finally:
         await valkey.delete(lock_key)

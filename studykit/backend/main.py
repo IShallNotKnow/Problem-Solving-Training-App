@@ -456,8 +456,8 @@ async def stream_questions(
                 yield f"event: question_approved\ndata: {q.model_dump_json()}\n\n"
 
             status = await valkey.get(f"job_status:{str(session_id)}")
-            if status and status.decode() in ("generated", "failed_validation", "failed"):
-                yield f"event: job_complete\ndata: {json.dumps({'status': status.decode()})}\n\n"
+            if status and status in ("generated", "failed_validation", "failed"):
+                yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
                 return
 
             last_status_check = asyncio.get_event_loop().time()
@@ -488,8 +488,8 @@ async def stream_questions(
                 if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
                     last_status_check = now
-                    if status and status.decode() in ("generated", "failed_validation", "failed"):
-                        yield f"event: job_complete\ndata: {json.dumps({'status': status.decode()})}\n\n"
+                    if status and status in ("generated", "failed_validation", "failed"):
+                        yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
                         break
 
         finally:
@@ -518,7 +518,7 @@ async def generate(
 
     existing = await app.state.valkey.get(f"active_job:{session_id}")
     if existing:
-        return {"job_id": existing.decode(), "status": "pending"}
+        return {"job_id": existing, "status": "pending"}
 
     lock = await app.state.valkey.set(
         f"active_job:{session_id}",
@@ -528,7 +528,7 @@ async def generate(
     )
     if not lock:
         existing = await app.state.valkey.get(f"active_job:{session_id}")
-        return {"job_id": existing.decode(), "status": "pending"}
+        return {"job_id": existing, "status": "pending"}
 
     job = await app.state.arq.enqueue_job(
         "generate_questions_task",

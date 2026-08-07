@@ -227,8 +227,9 @@ export default function StudyPage() {
                 },
 
                 onerror(err) {
-                    console.error('SSE error event:', e, 'readyState:', source.readyState, 'questions so far:', questions.length);
-                    source.close();
+                    console.error('SSE error:', err);
+
+                    if (controller.signal.aborted) return;
                     // Only reject if we got nothing — if we have some questions
                     // the job may have finished and closed the connection normally
                     if (questions.length === 0) {

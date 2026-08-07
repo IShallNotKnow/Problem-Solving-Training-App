@@ -825,7 +825,7 @@ respond.
             try:
                 message = await self.client.chat.completions.create(
                     model=MODEL,
-                    max_completion_tokens=10000,
+                    max_completion_tokens=15000,
                     tools=[QUESTION_GENERATION_TOOL],
                     tool_choice={"type": "function", "function": {"name": "generate_questions"}},
                     messages=request_messages,

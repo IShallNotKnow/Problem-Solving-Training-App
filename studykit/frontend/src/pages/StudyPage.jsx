@@ -29,6 +29,7 @@ export default function StudyPage() {
     const [generationComplete, setGenerationComplete] = useState(false);
 
     const inputRef = useRef(null);
+    const controllerRef = useRef(null);
     const messagesEndRef = useRef(null);
 
     // ── init ──────────────────────────────────────────────────

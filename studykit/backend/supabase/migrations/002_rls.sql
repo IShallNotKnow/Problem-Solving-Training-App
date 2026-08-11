@@ -504,3 +504,43 @@ USING (
 WITH CHECK (
     (select auth.uid()) = user_id
 );
+
+-- Trigger fires after every new signup in auth.users
+CREATE OR REPLACE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.handle_new_user();
+
+-- Grant appuser access to the tables it needs
+GRANT USAGE ON SCHEMA public TO appuser;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.users TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.sessions TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.study_sets TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.generation_inputs TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.generation_topics TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.generation_images TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.questions TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.question_scheduling TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.session_questions TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.answer_attempts TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.elo_history TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.topic_stats TO appuser;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.chat_messages TO appuser;
+
+-- Grant execute on RPCs so appuser can call them
+GRANT EXECUTE ON FUNCTION public.append_chat_turn(UUID, TEXT, TEXT) TO appuser;
+GRANT EXECUTE ON FUNCTION public.reset_session(UUID) TO appuser;
+GRANT EXECUTE ON FUNCTION public.submit_answer(UUID, UUID, UUID, TEXT, FLOAT, BOOLEAN, TEXT, TEXT, INT, JSONB, JSONB) TO appuser;
+GRANT EXECUTE ON FUNCTION public.finalize_generation(UUID, UUID, UUID, UUID, JSONB) TO appuser;
+GRANT EXECUTE ON FUNCTION public.get_resurfacing_candidates(UUID) TO appuser;
+GRANT EXECUTE ON FUNCTION public.handle_new_user() TO appuser;
+
+-- Sequences for any serial/generated columns
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO appuser;
+
+-- Ensure future tables and sequences are also granted
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO appuser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO appuser;

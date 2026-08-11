@@ -245,3 +245,17 @@ BEGIN
       );
 END;
 $$;
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    INSERT INTO public.users (user_id, email, created_at)
+    VALUES (NEW.id, NEW.email, NOW())
+    ON CONFLICT (user_id) DO NOTHING;
+    RETURN NEW;
+END;
+$$;

@@ -129,7 +129,7 @@ export default function StudyPage() {
                 formData.append('file', currentFile);
 
                 await apiUpload(
-                    `/sessions/${sessionId}/upload?label=${encodeURIComponent(label)}`,
+                    `/sessions/${sessionId}/upload`,
                     formData
                 );
             } catch (err) {

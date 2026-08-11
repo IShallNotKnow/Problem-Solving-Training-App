@@ -416,14 +416,25 @@ WITH CHECK (
     EXISTS (
         SELECT 1
         FROM generation_inputs
-        JOIN study_sets
-          ON study_sets.study_set_id = generation_inputs.study_set_id
-        WHERE generation_inputs.generation_input_id =
-              generation_images.generation_input_id
-          AND study_sets.user_id = (select auth.uid())
+        JOIN study_sets ON study_sets.study_set_id = generation_inputs.study_set_id
+        WHERE generation_inputs.generation_input_id = generation_images.generation_input_id
+        AND study_sets.user_id = (SELECT auth.uid())
     )
 );
 
+CREATE POLICY "generation_images_select_own"
+ON generation_images
+FOR SELECT
+TO appuser
+USING (
+    EXISTS (
+        SELECT 1
+        FROM generation_inputs
+        JOIN study_sets ON study_sets.study_set_id = generation_inputs.study_set_id
+        WHERE generation_inputs.generation_input_id = generation_images.generation_input_id
+        AND study_sets.user_id = (SELECT auth.uid())
+    )
+);
 
 -- =============================================================================
 -- GENERATION_TOPICS

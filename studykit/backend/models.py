@@ -208,7 +208,6 @@ class SessionContext(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    study_set_id: UUID                          # generation now targets a study set, not a session
     label: str
     raw_markdown: str = ""
     topic_profile: dict | None = None

@@ -524,8 +524,12 @@ async def stream_questions(
                 yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
                 return
 
-            last_status_check = asyncio.get_event_loop().time()
+            
+            loop = asyncio.get_running_loop()
+            last_status_check = loop.time()
             STATUS_CHECK_INTERVAL = 3.0
+            HEARTBEAT_INTERVAL = 15.0
+            last_heartbeat = loop.time()
 
             while True:
                 if await request.is_disconnected():
@@ -537,23 +541,40 @@ async def stream_questions(
                         timeout=1.0,
                     )
                 except asyncio.TimeoutError:
-                    message = None
+                    now = loop.time()
+                    if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                        yield ": ping\n\n"
+                        last_heartbeat = now
 
                 if message:
+                    last_heartbeat = loop.time()
                     q_data = json.loads(message["data"])
                     key = _dedup_key(q_data)
                     if key not in seen_ids:
                         seen_ids.add(key)
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
-                now = asyncio.get_event_loop().time()
+                now = loop.time()
                 if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
                     last_status_check = now
-                    if status and status in ("generated", "failed_validation", "failed"):
-                        yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
-                        break
-
+                    while True:
+                        try:
+                            remaining = await asyncio.wait_for(
+                                pubsub.get_message(ignore_subscribe_messages=True),
+                                timeout=0.2,
+                            )
+                        except asyncio.TimeoutError:
+                            break
+                        if remaining is None:
+                            break
+                        r_data = json.loads(remaining["data"])
+                        r_key = _dedup_key(r_data)
+                        if r_key not in seen_ids:
+                            seen_ids.add(r_key)
+                            yield f"event: question_approved\ndata: {remaining['data']}\n\n"
+                    yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
+                    break
         finally:
             await pubsub.unsubscribe(f"session:{str(session_id)}:questions")
 

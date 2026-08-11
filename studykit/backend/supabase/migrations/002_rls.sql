@@ -556,6 +556,7 @@ CREATE POLICY "images_select_service_only" ON storage.objects
 
 GRANT SELECT ON public.generation_images TO service_role;
 GRANT SELECT ON public.generation_inputs TO service_role;
+GRANT SELECT ON public.study_sets TO service_role;
 
 -- Grant appuser access to the tables it needs
 GRANT USAGE ON SCHEMA public TO appuser;

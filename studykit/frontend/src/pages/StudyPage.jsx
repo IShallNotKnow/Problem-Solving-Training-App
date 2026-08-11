@@ -125,7 +125,6 @@ export default function StudyPage() {
             try {
                 const formData = new FormData();
                 if (currentInput) formData.append('raw_markdown', currentInput);
-                formData.append('label', label);
                 formData.append('file', currentFile);
 
                 await apiUpload(

@@ -374,7 +374,6 @@ async def create_study_set(
 async def upload(
     request: Request,
     session_id: UUID,
-    study_set_id: UUID,
     user=Depends(get_current_user),
     pdf_processor: AsyncPDFProcessor = Depends(get_pdf_processor),
     image_filter: ImageFilter = Depends(get_image_filter),
@@ -389,6 +388,12 @@ async def upload(
         raise HTTPException(status_code=400, detail="Either a PDF file or raw text must be provided.")
 
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
+
+    # Fetch study_set_id from session — created by /study-set endpoint during init
+    state = await session_store.get(session_id)
+    if state.study_set_id is None:
+        raise HTTPException(status_code=400, detail="Session has no study set — call /study-set first.")
+    study_set_id = state.study_set_id
 
     pdf_content = ""
     pdf_markdown = ""

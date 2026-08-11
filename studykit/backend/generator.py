@@ -82,7 +82,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             raise ValueError(f"Session {ss_id} has no study set — upload content first")
 
         profile = await session_store.get_relevant_profile(state.study_set_id, state)
-        raw_images = await storage_manager.list_images(ss_id)
+        raw_images = await storage_manager.list_images(state.study_set_id)
         upload_context = await session_store.get_upload_context(state.study_set_id)
 
         if upload_context is None and not job.get("raw_markdown"):

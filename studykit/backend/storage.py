@@ -27,20 +27,20 @@ class StorageManager:
         self.db = supabase
         self.SAFE_FILENAME = re.compile(r"^[\w\-]+\.(png|jpg|jpeg|webp)$")
 
-    async def list_images(self, session_id: UUID) -> list[dict]:
-        logger.debug(f"[storage] listing images for session {session_id}")
+    async def list_images(self, study_set_id: UUID) -> list[dict]:
+        logger.debug(f"[storage] listing images for session {study_set_id}")
         response = await (
             self.db.table("generation_images")
-            .select("*, generation_inputs!inner(session_id)")
-            .eq("generation_inputs.session_id", str(session_id))
+            .select("*, generation_inputs!inner(study_set_id)")
+            .eq("generation_inputs.study_set_id", str(study_set_id))
             .execute()
         )
-        logger.info(f"[storage] found {len(response.data)} images for session {session_id}")
+        logger.info(f"[storage] found {len(response.data)} images for session {study_set_id}")
         return response.data
 
-    async def store_pdf(self, session_id: UUID, pdf_bytes: bytes, filename: str) -> str:
+    async def store_pdf(self, study_set_id: UUID, pdf_bytes: bytes, filename: str) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-        path = f"{session_id}/{Path(filename).stem}_{timestamp}.pdf"
+        path = f"{study_set_id}/{Path(filename).stem}_{timestamp}.pdf"
         logger.info(f"[storage] storing PDF at {path} ({len(pdf_bytes)} bytes)")
         try:
             await self.db.storage.from_("generation-pdfs").upload(
@@ -53,25 +53,25 @@ class StorageManager:
         except Exception as e:
             raise StorageError("upload", path, cause=e) from e
 
-    async def download_image(self, session_id: UUID, storage_path: str) -> bytes | None:
+    async def download_image(self, study_set_id: UUID, storage_path: str) -> bytes | None:
         try:
             filename = Path(storage_path).name
             if not filename or not self.SAFE_FILENAME.match(filename):
                 logger.warning(f"[storage] rejected unsafe image path: {storage_path}")
                 return None
-            expected_path = f"{session_id}/{filename}"
+            expected_path = f"{study_set_id}/{filename}"
             if storage_path != expected_path:
                 logger.warning(f"[storage] path mismatch: {storage_path} != {expected_path}")
                 return None
-            session = (
-                await self.db.table("sessions")
-                .select("session_id")
-                .eq("session_id", str(session_id))
+            study_set = (
+                await self.db.table("study_sets")
+                .select("study_set_id")
+                .eq("study_set_id", str(study_set_id))
                 .maybe_single()
                 .execute()
             )
-            if not session.data:
-                logger.warning(f"[storage] session {session_id} not found when downloading image")
+            if not study_set.data:
+                logger.warning(f"[storage] study set {study_set_id} not found when downloading image")
                 return None
             data = await self.db.storage.from_("generation-images").download(storage_path)
             logger.debug(f"[storage] downloaded image {storage_path} ({len(data)} bytes)")
@@ -81,10 +81,10 @@ class StorageManager:
             return None
 
     async def store_images(
-        self, session_id: UUID, images: list[dict], image_descriptions: dict[str, str]
+        self, study_set_id: UUID, images: list[dict], image_descriptions: dict[str, str]
     ) -> list[dict]:
         ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg"}
-        logger.info(f"[storage] storing {len(images)} images for session {session_id}")
+        logger.info(f"[storage] storing {len(images)} images for session {study_set_id}")
 
         async with httpx.AsyncClient() as http_client:
 
@@ -103,7 +103,7 @@ class StorageManager:
                             f"[storage] unsupported content type {content_type} for {img.get('filename')}, defaulting to image/png"
                         )
                         content_type = "image/png"
-                    path = f"{session_id}/{uuid4().hex}_{img['filename']}"
+                    path = f"{study_set_id}/{uuid4().hex}_{img['filename']}"
                     await self.db.storage.from_("generation-images").upload(
                         path=path,
                         file=response.content,
@@ -131,9 +131,9 @@ class StorageManager:
             succeeded = [r for r in results if isinstance(r, dict)]
             if failed:
                 logger.error(
-                    f"[storage] {len(failed)}/{len(images)} images failed to store for session {session_id}: {failed}"
+                    f"[storage] {len(failed)}/{len(images)} images failed to store for session {study_set_id}: {failed}"
                 )
             logger.info(
-                f"[storage] stored {len(succeeded)}/{len(images)} images successfully for session {session_id}"
+                f"[storage] stored {len(succeeded)}/{len(images)} images successfully for session {study_set_id}"
             )
             return succeeded

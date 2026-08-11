@@ -60,6 +60,14 @@ WITH CHECK (
     (select auth.uid()) = user_id
 );
 
+CREATE POLICY "sessions_delete_own"
+ON sessions
+FOR DELETE
+TO appuser
+USING (
+    (select auth.uid()) = user_id
+);
+
 
 -- =============================================================================
 -- STUDY_SETS
@@ -521,6 +529,30 @@ CREATE OR REPLACE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW
     EXECUTE FUNCTION public.handle_new_user();
+
+-- =============================================================================
+-- STORAGE BUCKET POLICIES
+-- StorageManager always uses service_role, which bypasses RLS by default.
+-- These policies make that restriction explicit and block all other roles.
+-- =============================================================================
+ 
+-- generation-pdfs: service_role only (store_pdf writes, no reads from backend)
+CREATE POLICY "pdfs_insert_service_only" ON storage.objects
+    FOR INSERT TO service_role
+    WITH CHECK (bucket_id = 'generation-pdfs');
+ 
+CREATE POLICY "pdfs_select_service_only" ON storage.objects
+    FOR SELECT TO service_role
+    USING (bucket_id = 'generation-pdfs');
+ 
+-- generation-images: service_role only (store_images writes, download_image reads)
+CREATE POLICY "images_insert_service_only" ON storage.objects
+    FOR INSERT TO service_role
+    WITH CHECK (bucket_id = 'generation-images');
+ 
+CREATE POLICY "images_select_service_only" ON storage.objects
+    FOR SELECT TO service_role
+    USING (bucket_id = 'generation-images');
 
 -- Grant appuser access to the tables it needs
 GRANT USAGE ON SCHEMA public TO appuser;

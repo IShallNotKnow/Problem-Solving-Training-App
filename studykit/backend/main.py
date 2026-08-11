@@ -436,8 +436,8 @@ async def upload(
             )
 
         pdf_path, stored_images = await asyncio.gather(
-            storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
-            storage_manager.store_images(session_id, filtered_images, descriptions),
+            storage_manager.store_pdf(study_set_id, pdf_bytes, pdf_name),
+            storage_manager.store_images(study_set_id, filtered_images, descriptions),
         )
 
     combined_content = "\n\n".join(filter(None, [pdf_content, raw_markdown]))

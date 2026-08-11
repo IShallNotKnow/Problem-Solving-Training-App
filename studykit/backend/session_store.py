@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -7,12 +8,12 @@ from fastapi import HTTPException
 
 from exceptions import DatabaseError, SessionNotFoundError
 from models import (
+    GenerationStatus,
     Question,
     QuestionResult,
     SessionState,
     TopicStats,
     TopicUpdate,
-    GenerationStatus,
 )
 from supabase import AsyncClient
 
@@ -23,9 +24,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Session store — uses user-scoped client so RLS fires on every query
-# ---------------------------------------------------------------------------
 
 class SessionStore:
     def __init__(self, db: AsyncClient):
@@ -34,16 +32,11 @@ class SessionStore:
     async def get(self, session_id: UUID) -> SessionState:
         logger.debug(f"[session] fetching session {session_id}")
         try:
-            row_res, questions_res, chat_res, history_res, topic_stats_res = await asyncio.gather(
+            row_res, chat_res, history_res = await asyncio.gather(
                 self.db.table("sessions")
                 .select("*")
                 .eq("session_id", str(session_id))
                 .single()
-                .execute(),
-                self.db.table("questions")
-                .select("*")
-                .eq("session_id", str(session_id))
-                .order("position")
                 .execute(),
                 self.db.table("chat_messages")
                 .select("role, content")
@@ -56,10 +49,6 @@ class SessionStore:
                 .eq("session_id", str(session_id))
                 .order("answered_at")
                 .execute(),
-                self.db.table("topic_stats")
-                .select("*")
-                .eq("session_id", str(session_id))
-                .execute(),
             )
         except Exception as e:
             if "no rows" in str(e).lower() or "pgrst116" in str(e).lower():
@@ -68,6 +57,38 @@ class SessionStore:
 
         if not row_res.data:
             raise SessionNotFoundError(f"Session {session_id} not found")
+
+        user_id = row_res.data["user_id"]
+        study_set_id = row_res.data.get("study_set_id")
+
+        # questions and topic_stats fetched after session row is confirmed
+        try:
+            if study_set_id:
+                questions_res, topic_stats_res = await asyncio.gather(
+                    self.db.table("session_questions")
+                    .select("position, status, source, questions(*)")
+                    .eq("session_id", str(session_id))
+                    .order("position")
+                    .execute(),
+                    self.db.table("topic_stats")
+                    .select("*")
+                    .eq("user_id", str(user_id))
+                    .execute(),
+                )
+                questions = []
+                for row in questions_res.data:
+                    q = Question(**row["questions"])
+                    questions.append(q.model_copy(update={"position": row["position"]}))
+            else:
+                questions = []
+                topic_stats_res = await (
+                    self.db.table("topic_stats")
+                    .select("*")
+                    .eq("user_id", str(user_id))
+                    .execute()
+                )
+        except Exception as e:
+            raise DatabaseError(f"Failed to fetch session data for {session_id}") from e
 
         topic_stats = {
             row["topic"]: TopicStats(
@@ -81,43 +102,48 @@ class SessionStore:
 
         state = SessionState(
             session_id=session_id,
+            study_set_id=UUID(study_set_id) if study_set_id else None,
             label=row_res.data["label"],
-            current_question_index=row_res.data["current_question_index"],
+            current_position=row_res.data["current_position"],
             created_at=row_res.data["created_at"],
             topic_stats=topic_stats,
-            questions=[Question(**q) for q in questions_res.data],
+            questions=questions,
             chat_history=list(reversed(chat_res.data)),
             history=[QuestionResult(**h) for h in history_res.data],
         )
         logger.info(
-            f"[session] loaded session {session_id}: {len(state.questions)} questions, index={state.current_question_index}, {len(state.topic_stats)} topics tracked"
+            f"[session] loaded session {session_id}: {len(state.questions)} questions, "
+            f"position={state.current_position}, {len(state.topic_stats)} topics tracked"
         )
         return state
 
     async def submit_answer_atomic(
         self,
         session_id: UUID,
-        question_id: str,
+        question_id: UUID,          # internal UUID, not model-generated text
+        user_id: UUID,              # needed for user-scoped topic_stats upsert
         response_str: str,
         question_result: QuestionResult,
-        next_index: int,
+        next_position: int,         # renamed from next_index
         updates: list[TopicUpdate],
         topic_stats: dict[str, TopicStats],
     ) -> None:
         logger.info(
-            f"[session] submitting answer atomically for question {question_id}, next_index={next_index}, score={question_result.score}"
+            f"[session] submitting answer atomically for question {question_id}, "
+            f"next_position={next_position}, score={question_result.score}"
         )
         await self.db.rpc(
             "submit_answer",
             {
                 "p_session_id": str(session_id),
-                "p_question_id": question_id,
+                "p_question_id": str(question_id),
+                "p_user_id": str(user_id),
                 "p_response": response_str,
                 "p_score": question_result.score,
                 "p_correct": question_result.correct,
                 "p_feedback": question_result.feedback,
                 "p_misconception": question_result.misconception,
-                "p_next_index": next_index,
+                "p_next_position": next_position,
                 "p_topic_stats": [stats.model_dump() for stats in topic_stats.values()],
                 "p_elo_history": [u.model_dump() for u in updates],
             },
@@ -138,21 +164,55 @@ class SessionStore:
             raise HTTPException(status_code=404, detail="Session not found")
         if res.data["user_id"] != str(user_id):
             logger.warning(
-                f"[session] ownership mismatch for {session_id}: owner={res.data['user_id']}, requester={user_id}"
+                f"[session] ownership mismatch for {session_id}: "
+                f"owner={res.data['user_id']}, requester={user_id}"
             )
             raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def verify_study_set_ownership(self, study_set_id: UUID, user_id: UUID) -> None:
+        logger.debug(f"[session] verifying ownership of study set {study_set_id} for user {user_id}")
+        res = await (
+            self.db.table("study_sets")
+            .select("user_id")
+            .eq("study_set_id", str(study_set_id))
+            .maybe_single()
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Study set not found")
+        if res.data["user_id"] != str(user_id):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def create_study_set(self, user_id: UUID, session_id: UUID, label: str) -> UUID:
+        logger.info(f"[session] creating study set for user {user_id}, label='{label}'")
+        res = await (
+            self.db.table("study_sets")
+            .insert({"user_id": str(user_id), "label": label})
+            .select("study_set_id")
+            .execute()
+        )
+        study_set_id = UUID(res.data[0]["study_set_id"])
+        logger.info(f"[session] study set {study_set_id} created")
+
+        await (
+            self.db.table("sessions")
+            .update({"study_set_id": str(study_set_id)})
+            .eq("session_id", str(session_id))
+            .execute()
+        )
+        logger.info(f"[session] study set {study_set_id} added to session row")
+        return study_set_id
 
     async def create(self, session_id: UUID, label: str, user_id: UUID) -> SessionState:
         logger.info(f"[session] creating session {session_id} for user {user_id}, label='{label}'")
         res = (
             await self.db.table("sessions")
-            .insert(
-                {
-                    "session_id": str(session_id),
-                    "label": label,
-                    "user_id": str(user_id),
-                }
-            )
+            .insert({
+                "session_id": str(session_id),
+                "label": label,
+                "user_id": str(user_id),
+                # study_set_id intentionally null until generation completes
+            })
             .select("*")
             .execute()
         )
@@ -165,40 +225,26 @@ class SessionStore:
         )
 
     async def save(self, session_id: UUID, state: SessionState) -> None:
-        logger.debug(f"[session] saving session {session_id}, index={state.current_question_index}")
-        updates = [
+        logger.debug(f"[session] saving session {session_id}, position={state.current_position}")
+        await (
             self.db.table("sessions")
-            .update(
-                {
-                    "current_question_index": state.current_question_index,
-                    "last_active_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            .update({
+                "current_position": state.current_position,
+                "last_active_at": datetime.now(timezone.utc).isoformat(),
+            })
             .eq("session_id", str(session_id))
             .execute()
-        ]
-        if state.topic_stats:
-            updates.append(
-                self.db.table("topic_stats")
-                .upsert(
-                    [
-                        {**stats.model_dump(), "session_id": str(session_id)}
-                        for stats in state.topic_stats.values()
-                    ],
-                    on_conflict="session_id,topic",
-                )
-                .execute()
-            )
-        await asyncio.gather(*updates)
+        )
+        # topic_stats now upserted by submit_answer RPC on user_id — save() no longer writes them
 
     async def get_topic_stats_at_question(
-        self, session_id: UUID, question_id: str, topics: list[str]
+        self, session_id: UUID, question_id: UUID, topics: list[str]
     ) -> dict[str, TopicStats]:
         res = await (
             self.db.table("elo_history")
             .select("topic, new_elo, new_p_known")
             .eq("session_id", str(session_id))
-            .eq("question_id", question_id)
+            .eq("question_id", str(question_id))
             .execute()
         )
         return {
@@ -211,33 +257,6 @@ class SessionStore:
             for row in res.data
             if row["topic"] in topics
         }
-
-    async def replace_questions(self, session_id: UUID, questions: list[Question]) -> None:
-        payload = [{**q.model_dump(), "position": i} for i, q in enumerate(questions)]
-        await self.db.rpc(
-            "replace_questions",
-            {
-                "p_session_id": str(session_id),
-                "p_questions": payload,
-            },
-        ).execute()
-
-    async def append_answer(self, session_id: UUID, response: str, result: QuestionResult) -> None:
-        await (
-            self.db.table("answer_attempts")
-            .insert(
-                {
-                    "session_id": str(session_id),
-                    "question_id": result.question_id,
-                    "response": response,
-                    "score": result.score,
-                    "correct": result.correct,
-                    "feedback": result.feedback,
-                    "misconception": result.misconception,
-                }
-            )
-            .execute()
-        )
 
     async def append_chat_turn(
         self, session_id: UUID, user_message: str, assistant_reply: str
@@ -257,131 +276,106 @@ class SessionStore:
 
     async def store_upload_context(
         self,
-        session_id: UUID,
+        study_set_id: UUID,
         content: str,
         raw_markdown: str,
         pdf_path: str,
         stored_images: list[dict],
-    ) -> None:
+    ) -> UUID:  # returns generation_input_id
         logger.info(
-            f"[session] storing upload context for session {session_id}, content={len(content)} chars, images={len(stored_images)}"
+            f"[session] storing upload context for study set {study_set_id}, "
+            f"content={len(content)} chars, images={len(stored_images)}"
         )
-        res = (
-            await self.db.table("generation_inputs")
-            .insert(
-                {
-                    "session_id": str(session_id),
-                    "content": content,
-                    "raw_markdown": raw_markdown,
-                    "pdf_path": pdf_path,
-                    "questions_generated": False,
-                }
-            )
+        res = await (
+            self.db.table("generation_inputs")
+            .insert({
+                "study_set_id": str(study_set_id),
+                "content": content,
+                "raw_markdown": raw_markdown,
+                "pdf_path": pdf_path,
+                "questions_generated": False,
+            })
+            .select("generation_input_id")
             .execute()
         )
-        generation_input_id = res.data[0]["generation_input_id"]
+        generation_input_id = UUID(res.data[0]["generation_input_id"])
         if stored_images:
             await (
                 self.db.table("generation_images")
-                .insert(
-                    [
-                        {
-                            "generation_input_id": generation_input_id,
-                            "storage_path": img["storage_path"],
-                            "filename": img["filename"],
-                            "content_type": img["content_type"],
-                            "description": img.get("description"),
-                        }
-                        for img in stored_images
-                    ]
-                )
+                .insert([
+                    {
+                        "generation_input_id": str(generation_input_id),
+                        "storage_path": img["storage_path"],
+                        "filename": img["filename"],
+                        "content_type": img["content_type"],
+                        "description": img.get("description"),
+                    }
+                    for img in stored_images
+                ])
                 .execute()
             )
         logger.info(f"[session] upload context stored, generation_input_id={generation_input_id}")
+        return generation_input_id
 
-    async def get_upload_context(self, session_id: UUID) -> dict | None:
-        logger.debug(f"[session] fetching upload context for session {session_id}")
+    async def get_upload_context(self, study_set_id: UUID) -> dict | None:
+        logger.debug(f"[session] fetching upload context for study set {study_set_id}")
         res = await (
             self.db.table("generation_inputs")
             .select("content, raw_markdown, pdf_path, generation_input_id")
-            .eq("session_id", str(session_id))
+            .eq("study_set_id", str(study_set_id))  # fixed: was session_id
             .order("created_at", desc=True)
             .limit(1)
             .maybe_single()
             .execute()
         )
         if res and res.data:
-            logger.info(f"[session] upload context found for session {session_id}")
+            logger.info(f"[session] upload context found for study set {study_set_id}")
         else:
-            logger.info(f"[session] no upload context found for session {session_id}")
+            logger.info(f"[session] no upload context found for study set {study_set_id}")
         return res.data if res else None
 
-    async def append_generation_input(
-        self, generation_input_id: UUID, questions: list[Question]
-    ) -> None:
-        topics_covered = list({t for q in questions for t in q.topic_difficulties.keys()})
-        logger.info(
-            f"[session] finalising generation input {generation_input_id}, topics={topics_covered}"
-        )
-        await asyncio.gather(
-            self.db.table("generation_inputs")
-            .update({"questions_generated": True})
-            .eq("generation_input_id", generation_input_id)
-            .execute(),
-            self.db.table("generation_topics")
-            .insert(
-                [
-                    {"generation_input_id": generation_input_id, "topic": topic}
-                    for topic in topics_covered
-                ]
-            )
-            .execute(),
-        )
-
     async def append_topic_updates(
-        self, session_id: UUID, question_id: str, updates: list[TopicUpdate]
+        self, session_id: UUID, question_id: UUID, updates: list[TopicUpdate]
     ) -> None:
         await (
             self.db.table("elo_history")
-            .insert(
-                [
-                    {
-                        "session_id": str(session_id),
-                        "question_id": question_id,
-                        "topic": update.topic,
-                        "previous_elo": update.previous_elo,
-                        "new_elo": update.new_elo,
-                        "elo_delta": update.elo_delta,
-                        "previous_p_known": update.previous_p_known,
-                        "new_p_known": update.new_p_known,
-                        "reason": update.reason,
-                    }
-                    for update in updates
-                ]
-            )
+            .insert([
+                {
+                    "session_id": str(session_id),
+                    "question_id": str(question_id),
+                    "topic": update.topic,
+                    "previous_elo": update.previous_elo,
+                    "new_elo": update.new_elo,
+                    "elo_delta": update.elo_delta,
+                    "previous_p_known": update.previous_p_known,
+                    "new_p_known": update.new_p_known,
+                    "reason": update.reason,
+                }
+                for update in updates
+            ])
             .execute()
         )
 
     async def get_topic_updates_for_question(
-        self, session_id: UUID, question_id: str
+        self, session_id: UUID, question_id: UUID
     ) -> list[TopicUpdate]:
         res = await (
             self.db.table("elo_history")
             .select("*")
             .eq("session_id", str(session_id))
-            .eq("question_id", question_id)
+            .eq("question_id", str(question_id))
             .execute()
         )
         return [TopicUpdate(**row) for row in res.data]
 
-    async def get_relevant_profile(self, session_id: UUID, state: SessionState) -> dict | None:
+    async def get_relevant_profile(self, study_set_id: UUID, state: SessionState) -> dict | None:
         if not state.topic_stats:
-            logger.info(f"[session] no topic stats yet for session {session_id}, skipping profile")
+            logger.info(f"[session] no topic stats yet for study set {study_set_id}, skipping profile")
             return None
         prev_generations = await (
             self.db.table("generation_topics")
-            .select("topic, generation_inputs!inner(session_id)")
-            .eq("generation_inputs.session_id", str(session_id))
+            .select("topic, generation_inputs!inner(study_set_id)")
+            .eq("generation_inputs.study_set_id", str(study_set_id))  # fixed: was session_id
             .execute()
         )
         all_previous_topics = {row["topic"] for row in prev_generations.data}
@@ -391,9 +385,9 @@ class SessionStore:
             for bucket, topics in profile.items()
         }
         if not any(filtered.values()):
-            logger.info(f"[session] topic profile empty after filtering for session {session_id}")
+            logger.info(f"[session] topic profile empty after filtering for study set {study_set_id}")
             return None
-        logger.info(f"[session] topic profile for session {session_id}: {filtered}")
+        logger.info(f"[session] topic profile for study set {study_set_id}: {filtered}")
         return filtered
 
     async def get_recent_topic_history(
@@ -410,53 +404,74 @@ class SessionStore:
         )
         return [row["new_elo"] for row in reversed(res.data)]
 
-    async def replace_questions_and_finalize(
+    async def upsert_questions_to_study_set(
+        self,
+        study_set_id: UUID,
+        generation_input_id: UUID,
+        questions: list[Question],
+    ) -> list[UUID]:
+        """Insert new questions into the study set pool. Returns internal UUIDs in order."""
+        if not questions:
+            return []
+        payload = [
+            {
+                "study_set_id": str(study_set_id),
+                "generation_input_id": str(generation_input_id),
+                "question_id": q.question_id,
+                "question_type": q.question_type,
+                "prompt": q.prompt,
+                "correct_answer": q.correct_answer,
+                "explanation": q.explanation,
+                "topic_difficulties": q.topic_difficulties,
+                "choices": q.choices,
+                "correct_choice_index": q.correct_choice_index,
+                "rubric_points": q.rubric_points,
+            }
+            for q in questions
+        ]
+        res = await (
+            self.db.table("questions")
+            .upsert(
+                payload,
+                on_conflict="study_set_id,generation_input_id,question_id",
+            )
+            .select("id, question_id")
+            .execute()
+        )
+        # Return UUIDs in the same order as the input questions
+        id_map = {row["question_id"]: UUID(row["id"]) for row in res.data}
+        return [id_map[q.question_id] for q in questions]
+
+    async def populate_session_questions(
         self,
         session_id: UUID,
-        questions: list[Question],
-        generation_input_id: UUID | None = None,
-        user_id: UUID | None = None,
+        question_uuids: list[UUID],         # ordered list — position derived from index
+        resurfaced_ids: set[UUID] | None = None,
     ) -> None:
-
-        logger.info(
-            f"[session] replacing questions for session {session_id}, count={len(questions)}, generation_input_id={generation_input_id}"
+        """Populate session_questions for this session from the given question UUIDs."""
+        resurfaced_ids = resurfaced_ids or set()
+        await (
+            self.db.table("session_questions")
+            .upsert(
+                [
+                    {
+                        "session_id": str(session_id),
+                        "question_id": str(qid),
+                        "position": i,
+                        "source": "resurfaced" if qid in resurfaced_ids else "generated",
+                        "status": "unseen",
+                    }
+                    for i, qid in enumerate(question_uuids)
+                ],
+                on_conflict="session_id,question_id",
+            )
+            .execute()
         )
-
-        topics_covered = (
-            list({t for q in questions for t in q.topic_difficulties})
-            if generation_input_id is not None
-            else None
-        )
-
-        await self.db.rpc(
-            "replace_questions_and_finalize",
-            {
-                "p_session_id": str(session_id),
-                "p_questions": [{**q.model_dump(), "position": i} for i, q in enumerate(questions)],
-                "p_generation_input_id": str(generation_input_id) if generation_input_id else None,
-                "p_topics_covered": topics_covered,
-                "p_user_id": str(user_id) if user_id else None,
-            },
-        ).execute()
-
-    async def reset_session(self, session_id: UUID) -> None:
-        logger.info(f"[session] resetting session {session_id}")
-        try:
-            await self.db.rpc(
-                "reset_session",
-                {
-                    "p_session_id": str(session_id),
-                },
-            ).execute()
-            logger.info(f"[session] session {session_id} reset successfully")
-        except Exception as e:
-            if "session_not_found" in str(e):
-                raise SessionNotFoundError(f"Session {session_id} not found") from e
-            raise DatabaseError(f"Failed to reset session {session_id}") from e
 
     async def finalize_generation(
         self,
         session_id: UUID,
+        study_set_id: UUID,
         generation_input_id: UUID | None,
         user_id: UUID,
         status: GenerationStatus,
@@ -475,7 +490,7 @@ class SessionStore:
 
         logger.info(
             f"[session] finalizing generation for session {session_id}, "
-            f"status={status}, generation_input_id={generation_input_id}"
+            f"study_set={study_set_id}, status={status}"
         )
 
         topics_covered = (
@@ -484,11 +499,11 @@ class SessionStore:
             else None
         )
 
-        # Reset index and mark generation complete — questions already in DB
         ops = [
             self.db.table("sessions")
             .update({
-                "current_question_index": 0,
+                "study_set_id": str(study_set_id),
+                "current_position": 0,
                 "last_active_at": datetime.now(timezone.utc).isoformat(),
             })
             .eq("session_id", str(session_id))
@@ -498,7 +513,7 @@ class SessionStore:
         if generation_input_id is not None:
             ops.append(
                 self.db.table("generation_inputs")
-                .update({"questions_generated": True})
+                .update({"questions_generated": True, "status": status.value})
                 .eq("generation_input_id", str(generation_input_id))
                 .execute()
             )
@@ -506,10 +521,7 @@ class SessionStore:
                 ops.append(
                     self.db.table("generation_topics")
                     .insert([
-                        {
-                            "generation_input_id": str(generation_input_id),
-                            "topic": topic,
-                        }
+                        {"generation_input_id": str(generation_input_id), "topic": topic}
                         for topic in topics_covered
                     ])
                     .execute()
@@ -518,15 +530,81 @@ class SessionStore:
         await asyncio.gather(*ops)
         logger.info(f"[session] generation finalized for session {session_id}")
 
+    async def reset_session(self, session_id: UUID) -> None:
+        logger.info(f"[session] resetting session {session_id}")
+        try:
+            await self.db.rpc(
+                "reset_session",
+                {"p_session_id": str(session_id)},
+            ).execute()
+            logger.info(f"[session] session {session_id} reset successfully")
+        except Exception as e:
+            if "session_not_found" in str(e):
+                raise SessionNotFoundError(f"Session {session_id} not found") from e
+            raise DatabaseError(f"Failed to reset session {session_id}") from e
+
     async def get_questions(self, session_id: UUID) -> list[Question]:
+        """Used by SSE endpoint to flush existing questions on reconnect."""
         try:
             res = await (
-                self.db.table("questions")
-                .select("*")
+                self.db.table("session_questions")
+                .select("position, status, source, questions(*)")
                 .eq("session_id", str(session_id))
                 .order("position")
                 .execute()
             )
-            return [Question(**q) for q in res.data]
+            questions = []
+            for row in res.data:
+                q = Question(**row["questions"])
+                questions.append(q.model_copy(update={"position": row["position"]}))
+            return questions
         except Exception as e:
             raise DatabaseError(f"Failed to fetch questions for session {session_id}") from e
+
+    async def select_questions_for_resurfacing(
+        self,
+        study_set_id: UUID,             # resurfacing draws from study set pool, not session
+        new_topics: set[str],
+        state: SessionState,
+        target: int,
+    ) -> list[Question]:
+        now = datetime.now(timezone.utc)
+
+        # Reads from question_scheduling which is user+question scoped
+        res = await self.db.rpc(
+            "get_resurfacing_candidates",
+            {"p_study_set_id": str(study_set_id)},
+        ).execute()
+
+        def retrievability(p_known: float, days_since_attempt: float) -> float:
+            stability = max(1.0, p_known * 30)
+            return math.exp(-days_since_attempt / stability)
+
+        candidates = []
+        for row in res.data:
+            if not row.get("last_attempted_at"):
+                continue
+            days_elapsed = (now - datetime.fromisoformat(row["last_attempted_at"])).days
+            p_known = state.topic_stats.get(
+                row["topic"], TopicStats(topic=row["topic"])
+            ).p_known
+            r = retrievability(p_known, days_elapsed)
+
+            if r >= 0.9:
+                continue
+
+            topic_overlap = len(set(row["topics"]) & new_topics)
+            candidates.append({
+                "question": Question(**row),
+                "retrievability": r,
+                "topic_overlap": topic_overlap,
+                "p_known": p_known,
+            })
+
+        candidates.sort(key=lambda c: (
+            -c["topic_overlap"],
+            c["retrievability"],
+            c["p_known"],
+        ))
+
+        return [c["question"] for c in candidates[:target]]

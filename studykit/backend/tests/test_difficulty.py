@@ -1,5 +1,6 @@
-from processing import DifficultyController
-from models import TopicStats, TopicResult
+from backend.models import TopicResult, TopicStats
+from backend.processing import DifficultyController
+
 
 def test_bkt_update():
     dc = DifficultyController()

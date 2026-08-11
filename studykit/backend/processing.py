@@ -2,11 +2,11 @@ import asyncio
 import base64
 import json
 import logging
-from urllib.parse import urlparse
-from uuid import UUID
 import re
 import unicodedata
 from collections.abc import AsyncGenerator
+from urllib.parse import urlparse
+from uuid import UUID
 
 import httpx
 from dotenv import load_dotenv

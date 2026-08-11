@@ -1,18 +1,26 @@
 import asyncio
+import json
 import logging
 import traceback
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
-import json
 
 import httpx
 from arq import create_pool
-from arq.jobs import Job, JobStatus, DeserializationError
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.sse import EventSourceResponse
 from openai import APIStatusError, BadRequestError, RateLimitError
 from pydantic import ValidationError
 from slowapi import Limiter
@@ -42,7 +50,6 @@ from models import (
     ChatResponse,
     CreateSessionRequest,
     GenerateRequest,
-    GenerationResultDTO,
     QuestionDTO,
     SessionContext,
     SessionStateDTO,
@@ -335,10 +342,31 @@ async def create_session(
     return SessionSummary(
         session_id=state.session_id,
         label=state.label,
-        current_question_index=0,
+        current_position=0,
         created_at=state.created_at,
-        questions_count=0,
     )
+
+
+
+@app.post("/sessions/{session_id}/study-set", status_code=201)
+@limiter.limit("5/minute")
+async def create_study_set(
+    request: Request,
+    session_id: UUID,
+    label: str = "Untitled Study Set",
+    user=Depends(get_current_user),
+    session_store: SessionStore = Depends(get_session_store),
+):
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
+    try:
+        study_set_id = await session_store.create_study_set(
+            user_id=UUID(user["sub"]),
+            session_id=session_id,
+            label=label,
+        )
+        return {"study_set_id": str(study_set_id)}
+    except DatabaseError:
+        raise HTTPException(status_code=503, detail="Database unavailable, please retry")
 
 
 @app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
@@ -346,8 +374,7 @@ async def create_session(
 async def upload(
     request: Request,
     session_id: UUID,
-    label: str,
-    file: UploadFile = File(...),
+    study_set_id: UUID,
     user=Depends(get_current_user),
     pdf_processor: AsyncPDFProcessor = Depends(get_pdf_processor),
     image_filter: ImageFilter = Depends(get_image_filter),
@@ -355,53 +382,80 @@ async def upload(
     concept_extractor: ConceptExtractor = Depends(get_concept_extractor),
     storage_manager: StorageManager = Depends(get_storage_manager),
     session_store: SessionStore = Depends(get_session_store),
+    file: UploadFile | None = File(default=None),
+    raw_markdown: str | None = Form(default=None),
 ):
-    logger.info(
-        f"[endpoint] POST /sessions/{session_id}/upload user={user['sub']} filename={file.filename}"
+    if file is None and not raw_markdown:
+        raise HTTPException(status_code=400, detail="Either a PDF file or raw text must be provided.")
+
+    await session_store.verify_ownership(session_id, UUID(user["sub"]))
+
+    pdf_content = ""
+    pdf_markdown = ""
+    pdf_path = ""
+    stored_images = []
+
+    if file is not None:
+        logger.info(f"[endpoint] POST /sessions/{session_id}/upload user={user['sub']} filename={file.filename}")
+
+        content_length = file.headers.get("content-length")
+        if content_length and int(content_length) > MAX_PDF_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.",
+            )
+
+        file.file.seek(0, 2)
+        real_size = file.file.tell()
+        file.file.seek(0)
+        if real_size > MAX_PDF_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.",
+            )
+
+        pdf_bytes = await file.read()
+        pdf_name = file.filename
+
+        markdown, items, images = await pdf_processor.extract(pdf_bytes)
+        filtered_images = await image_filter.heuristic_filter(images)
+        filtered_images, descriptions = await image_filter.semantic_filter(filtered_images)
+        filtered_items = await text_filter.item_filter(items)
+        scored_pages = await concept_extractor.score_pages(filtered_items)
+        pdf_content = await concept_extractor.prioritize_content(filtered_items, scored_pages) or ""
+        pdf_markdown = markdown
+
+        if not pdf_content and not raw_markdown:
+            raise HTTPException(
+                status_code=422, detail="No meaningful content could be extracted from this document."
+            )
+
+        pdf_path, stored_images = await asyncio.gather(
+            storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
+            storage_manager.store_images(session_id, filtered_images, descriptions),
+        )
+
+    combined_content = "\n\n".join(filter(None, [pdf_content, raw_markdown]))
+    combined_markdown = "\n\n".join(filter(None, [pdf_markdown, raw_markdown]))
+
+    if not combined_content:
+        raise HTTPException(status_code=422, detail="No meaningful content could be extracted.")
+
+    generation_input_id = await session_store.store_upload_context(
+        study_set_id=study_set_id,
+        content=combined_content,
+        raw_markdown=combined_markdown,
+        pdf_path=pdf_path,
+        stored_images=stored_images,
     )
-    content_length = file.headers.get("content-length")
-    if content_length and int(content_length) > MAX_PDF_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.",
-        )
-
-    file.file.seek(0, 2)
-    real_size = file.file.tell()
-    file.file.seek(0)
-    if real_size > MAX_PDF_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail=f"PDF exceeds the maximum allowed size of {MAX_PDF_SIZE // 1024 // 1024} MB.",
-        )
-
-    logger.info(f"[endpoint] PDF size: {real_size} bytes")
-    pdf_bytes = await file.read()
-    pdf_name = file.filename
-
-    markdown, items, images = await pdf_processor.extract(pdf_bytes)
-    filtered_images = await image_filter.heuristic_filter(images)
-    filtered_images, descriptions = await image_filter.semantic_filter(filtered_images)
-    filtered_items = await text_filter.item_filter(items)
-    scored_pages = await concept_extractor.score_pages(filtered_items)
-    content = await concept_extractor.prioritize_content(filtered_items, scored_pages)
-
-    if content is None:
-        logger.warning(f"[endpoint] no content extracted from PDF for session {session_id}")
-        raise HTTPException(
-            status_code=422, detail="No meaningful content could be extracted from this document."
-        )
-
-    pdf_path, stored_images = await asyncio.gather(
-        storage_manager.store_pdf(session_id, pdf_bytes, pdf_name),
-        storage_manager.store_images(session_id, filtered_images, descriptions),
-    )
-
-    await session_store.store_upload_context(session_id, content, markdown, pdf_path, stored_images)
-    logger.info(f"[endpoint] upload complete for session {session_id}")
+    logger.info(f"[endpoint] upload complete for session {session_id}, study_set={study_set_id}")
 
     return UploadResponse(
-        session_id=session_id, content=content, raw_markdown=markdown, pdf_path=pdf_path
+        study_set_id=study_set_id,
+        generation_input_id=generation_input_id,
+        content=combined_content,
+        raw_markdown=combined_markdown,
+        pdf_path=pdf_path,
     )
 
 
@@ -425,19 +479,21 @@ async def reset_session(
 
     return SessionStateDTO(
         session_id=state.session_id,
+        study_set_id=state.study_set_id,
         label=state.label,
-        current_question_index=state.current_question_index,
+        current_position=state.current_position,
         topic_stats=state.topic_stats,
         questions=[QuestionDTO.model_validate(q, from_attributes=True) for q in state.questions],
         history=state.history,
         chat_history=state.chat_history,
     )
 
+
 @app.get("/sessions/{session_id}/stream")
 async def stream_questions(
     session_id: UUID,
     request: Request,
-    user = Depends(get_current_user),
+    user=Depends(get_current_user),
     session_store: SessionStore = Depends(get_session_store),
 ):
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
@@ -451,8 +507,11 @@ async def stream_questions(
             questions = await session_store.get_questions(session_id)
             seen_ids = set()
 
+            def _dedup_key(q_data: dict) -> str:
+                return f"{q_data.get('generation_input_id')}:{q_data.get('question_id')}"
+
             for q in questions:
-                seen_ids.add(q.question_id)
+                seen_ids.add(_dedup_key(q.model_dump()))
                 yield f"event: question_approved\ndata: {q.model_dump_json()}\n\n"
 
             status = await valkey.get(f"job_status:{str(session_id)}")
@@ -477,13 +536,11 @@ async def stream_questions(
 
                 if message:
                     q_data = json.loads(message["data"])
-                    q_id = q_data["question_id"]
-
-                    if q_id not in seen_ids:
-                        seen_ids.add(q_id)
+                    key = _dedup_key(q_data)
+                    if key not in seen_ids:
+                        seen_ids.add(key)
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
-                # Check terminal status periodically and on every message
                 now = asyncio.get_event_loop().time()
                 if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
@@ -504,6 +561,7 @@ async def stream_questions(
         },
     )
 
+
 @app.post("/sessions/{session_id}/generate", status_code=202)
 @limiter.limit("2/minute")
 async def generate(
@@ -516,14 +574,19 @@ async def generate(
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
     jwt = request.headers.get("Authorization", "").removeprefix("Bearer ")
 
+    # Verify session has a study set before allowing generation
+    state = await session_store.get(session_id)
+    if state.study_set_id is None:
+        raise HTTPException(status_code=400, detail="Session has no study material — upload content first.")
+
     existing = await app.state.valkey.get(f"active_job:{session_id}")
     if existing:
         return {"job_id": existing, "status": "pending"}
 
     lock = await app.state.valkey.set(
         f"active_job:{session_id}",
-        "pending",  # placeholder until we have the real job_id
-        nx=True,    # only set if not exists
+        "pending",
+        nx=True,
         ex=3600,
     )
     if not lock:
@@ -533,7 +596,12 @@ async def generate(
     job = await app.state.arq.enqueue_job(
         "generate_questions_task",
         str(session_id),
-        {"jwt": jwt, "user_id": user["sub"], "raw_markdown": req.raw_markdown, "label": req.label},
+        {
+            "jwt": jwt,
+            "user_id": user["sub"],
+            "study_set_id": str(state.study_set_id),  # worker needs this
+            "label": req.label,
+        },
     )
     if job is None:
         await app.state.valkey.delete(f"active_job:{session_id}")
@@ -553,9 +621,7 @@ async def list_sessions(
     logger.info(f"[endpoint] GET /sessions user={user['sub']}")
     res = await (
         db.table("sessions")
-        .select(
-            "session_id, label, current_question_index, created_at, questions_count, last_active_at"
-        )
+        .select("session_id, study_set_id, label, current_position, created_at, last_active_at")
         .order("last_active_at", desc=True)
         .execute()
     )
@@ -582,8 +648,9 @@ async def get_session(
 
     return SessionStateDTO(
         session_id=state.session_id,
+        study_set_id=state.study_set_id,
         label=state.label,
-        current_question_index=state.current_question_index,
+        current_position=state.current_position,
         topic_stats=state.topic_stats,
         questions=[QuestionDTO.model_validate(q, from_attributes=True) for q in state.questions],
         history=state.history,
@@ -623,7 +690,8 @@ async def submit_answer(
     difficulty_controller: DifficultyController = Depends(get_difficulty_controller),
 ):
     logger.info(
-        f"[endpoint] POST /sessions/{session_id}/answer user={user['sub']} question={req.question_id} type={'MCQ' if req.choice_index is not None else 'FRQ'}"
+        f"[endpoint] POST /sessions/{session_id}/answer user={user['sub']} "
+        f"question={req.question_id} type={'MCQ' if req.choice_index is not None else 'FRQ'}"
     )
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
     try:
@@ -633,6 +701,7 @@ async def submit_answer(
     except DatabaseError:
         raise HTTPException(status_code=503, detail="Database unavailable, please retry")
 
+    # Find by model-generated question_id string; use internal id for DB ops
     question = next((q for q in state.questions if q.question_id == req.question_id), None)
     if question is None:
         raise HTTPException(status_code=404, detail=f"Question {req.question_id} not found")
@@ -654,10 +723,10 @@ async def submit_answer(
         if qr.question_id == req.question_id:
             logger.info(f"[endpoint] returning cached answer for question {req.question_id}")
             past_updates = await session_store.get_topic_updates_for_question(
-                session_id, req.question_id
+                session_id, question.id
             )
             past_stats = await session_store.get_topic_stats_at_question(
-                session_id, req.question_id, question.topics
+                session_id, question.id, question.topics
             )
             return AnswerResponse(
                 feedback=qr.feedback,
@@ -667,9 +736,10 @@ async def submit_answer(
                 misconception=qr.misconception,
             )
 
-    if state.questions[state.current_question_index].question_id != req.question_id:
+    if state.questions[state.current_position].question_id != req.question_id:
         logger.warning(
-            f"[endpoint] out-of-order answer: expected {state.questions[state.current_question_index].question_id}, got {req.question_id}"
+            f"[endpoint] out-of-order answer: expected "
+            f"{state.questions[state.current_position].question_id}, got {req.question_id}"
         )
         raise HTTPException(
             status_code=409,
@@ -689,7 +759,6 @@ async def submit_answer(
                 question=question,
                 state=state,
             )
-            
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -703,28 +772,19 @@ async def submit_answer(
     def _normalize_topic(t: str) -> str:
         return ''.join(c for c in t if c.isprintable()).strip()
 
-    grader_topics = {_normalize_topic(tr.topic) for tr in question_result.topic_results}
-    question_topics = {_normalize_topic(t) for t in question.topics}
-
     if not question_result.topic_results:
         raise HTTPException(status_code=500, detail="Grading did not return topic results")
-    if grader_topics != question_topics:
-        logger.warning(f"[endpoint] topic mismatch after normalization: grader={grader_topics} question={question_topics}")
-        raise HTTPException(status_code=500, detail="Grading returned topic results that don't match question topics")
 
-    logger.info(f"[endpoint] topic_results topics: {[tr.topic for tr in question_result.topic_results]}")
-    logger.info(f"[endpoint] question.topics: {question.topics}")
-
-    if not question_result.topic_results:
-        raise HTTPException(status_code=500, detail="Grading did not return topic results")
     returned_topics = [tr.topic for tr in question_result.topic_results]
     if len(returned_topics) != len(set(returned_topics)):
-        # Duplicates would apply the ELO/BKT update twice for the same topic.
-        raise HTTPException(
-            status_code=500,
-            detail="Grading returned duplicate topic results",
+        raise HTTPException(status_code=500, detail="Grading returned duplicate topic results")
+
+    grader_topics = {_normalize_topic(tr.topic) for tr in question_result.topic_results}
+    question_topics = {_normalize_topic(t) for t in question.topics}
+    if grader_topics != question_topics:
+        logger.warning(
+            f"[endpoint] topic mismatch: grader={grader_topics} question={question_topics}"
         )
-    if set(returned_topics) != set(question.topics):
         raise HTTPException(
             status_code=500,
             detail="Grading returned topic results that don't match question topics",
@@ -735,15 +795,17 @@ async def submit_answer(
     state, updates = difficulty_controller.update(state, question_result, question)
     state.advance()
     logger.info(
-        f"[endpoint] answer processed for {req.question_id}: score={question_result.score}, advancing to index {state.current_question_index}"
+        f"[endpoint] answer processed for {req.question_id}: score={question_result.score}, "
+        f"advancing to position {state.current_position}"
     )
 
     await session_store.submit_answer_atomic(
         session_id=session_id,
-        question_id=question_result.question_id,
+        question_id=question.id,            # internal UUID
+        user_id=UUID(user["sub"]),          # for user-scoped topic_stats
         response_str=response_str,
         question_result=question_result,
-        next_index=state.current_question_index,
+        next_position=state.current_position,
         updates=updates,
         topic_stats=state.topic_stats,
     )
@@ -781,4 +843,4 @@ async def chat(
     await session_store.append_chat_turn(session_id, req.user_message, reply)
     logger.info(f"[endpoint] chat complete for session {session_id}")
 
-    return ChatResponse(reply=reply, current_question_index=state.current_question_index)
+    return ChatResponse(reply=reply, current_position=state.current_position)

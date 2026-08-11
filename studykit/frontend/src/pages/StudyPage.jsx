@@ -36,9 +36,19 @@ export default function StudyPage() {
     useEffect(() => {
         const initSession = async () => {
             try {
-                const state = await apiFetch(`/sessions/${sessionId}`);
+                let state = await apiFetch(`/sessions/${sessionId}`);
+
+                // Create study set if session doesn't have one yet
+                if (!state.study_set_id) {
+                    await apiFetch(`/sessions/${sessionId}/study-set`, {
+                        method: 'POST',
+                    });
+                    state = await apiFetch(`/sessions/${sessionId}`);
+                }
+
                 setSessionState(state);
 
+                // Restore chat history if session was previously active
                 if (state.chat_history?.length > 0 && state.questions?.length > 0) {
                     const loadedMessages = state.chat_history.map(msg => ({
                         role: msg.role || (msg.type === 'human' ? 'user' : 'assistant'),
@@ -52,20 +62,22 @@ export default function StudyPage() {
                 }
 
                 const loadedQuestions = Array.isArray(state?.questions) ? state.questions : [];
-                const index = state?.current_question_index ?? 0;
+                const position = state?.current_position ?? 0;
+
                 if (loadedQuestions.length === 0) {
-                    // Session exists but generation produced nothing usable — let the
-                    // user upload/paste again rather than showing an empty study view.
                     setMode('idle');
-                } else if (index >= loadedQuestions.length) {
-                    setMode('complete');
+                } else if (position >= loadedQuestions.length) {
+                    if (generationComplete) {
+                        setMode('complete');
+                    } else {
+                        setMode('loading');
+                    }
                 } else {
                     setMode('answer');
                 }
+
             } catch (err) {
-                // 404 = new session, not a real error
                 if (err.status === 404) return;
-                // 403 or 500 = broken, show full page error
                 setSessionError(
                     err.status === 403
                         ? "You don't have access to this session."
@@ -87,7 +99,7 @@ export default function StudyPage() {
     // ── mode toggle ───────────────────────────────────────────
     const handleModeToggle = (newMode) => {
         const questions = sessionState?.questions;
-        const index = sessionState?.current_question_index;
+        const index = sessionState?.current_position;
         if (newMode === 'answer' && (!questions?.length || index >= questions.length)) return;
         setMode(newMode);
     };
@@ -112,7 +124,10 @@ export default function StudyPage() {
         if (currentFile) {
             try {
                 const formData = new FormData();
+                if (currentInput) formData.append('raw_markdown', currentInput);
+                formData.append('label', label);
                 formData.append('file', currentFile);
+
                 await apiUpload(
                     `/sessions/${sessionId}/upload?label=${encodeURIComponent(label)}`,
                     formData
@@ -285,21 +300,45 @@ export default function StudyPage() {
     };
 
     // ── reset + regenerate ────────────────────────────────────
-    const handleReset = async () => {
-        setLoading(true);
+    const resetSessionState = async () => {
+        await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
+        setMessages([]);
         setGenerationComplete(false);
-        try {
-            await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
-        } catch (err) {
-            setLoading(false);
-            const msg = err.status < 500
-                ? err.message
-                : 'Could not reset this session — please try again.';
-            toast.error(msg);
+        setSessionState(prev => ({
+            ...prev,
+            questions: [],
+            current_position: 0,
+        }));
+    };
+
+    const handleRegenerate = async (guidanceText = '') => {
+        if (!sessionState?.study_set_id) {
+            toast.error('No study material to regenerate from.');
             return;
         }
-        // /generate is asynchronous (202 + job_id) — must poll, not read questions directly.
-        await handleGenerate(sessionId, sessionState?.label ?? 'Study set', '');
+        setLoading(true);
+        try {
+            await resetSessionState();
+            await handleGenerate(sessionId, sessionState?.label ?? 'Study set', guidanceText);
+        } catch (err) {
+            toast.error(err.status < 500
+                ? err.message
+                : 'Could not reset this session — please try again.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleAddMaterial = async () => {
+        setLoading(true);
+        try {
+            await resetSessionState();
+            setMode('idle');
+        } catch (err) {
+            toast.error('Could not reset this session — please try again.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     // ── answer ────────────────────────────────────────────────
@@ -307,7 +346,7 @@ export default function StudyPage() {
 
     const handleAnswer = async (choiceIndex = null) => {
         const currentInput = inputText;
-        const currentQuestion = sessionState?.questions?.[sessionState?.current_question_index];
+        const currentQuestion = sessionState?.questions?.[sessionState?.current_position];
         if (!currentQuestion) return;
 
         const isMCQ = currentQuestion.question_type === 'MCQ';
@@ -351,13 +390,13 @@ export default function StudyPage() {
                 type: 'answer_feedback',
             }]);
 
-            const nextIndex = (sessionState?.current_question_index ?? 0) + 1;
+            const nextIndex = (sessionState?.current_position ?? 0) + 1;
             const total = sessionState?.questions?.length ?? 0;
 
             if (nextIndex < total) {
                 setSessionState(prev => ({
                     ...prev,
-                    current_question_index: nextIndex,
+                    current_position: nextIndex,
                 }));
             } else if (nextIndex >= total) {
                 if (generationComplete) {
@@ -464,13 +503,13 @@ export default function StudyPage() {
     // instead of sessionState.questions, which may be undefined mid-flight.
     const questions = Array.isArray(sessionState?.questions) ? sessionState.questions : [];
     const questionCount = questions.length;
-    const answeredCount = Math.min(sessionState?.current_question_index ?? 0, questionCount);
+    const answeredCount = Math.min(sessionState?.current_position ?? 0, questionCount);
 
     const hasActiveQuestions =
-        questionCount > 0 && (sessionState?.current_question_index ?? 0) < questionCount;
+        questionCount > 0 && (sessionState?.current_position ?? 0) < questionCount;
 
     const currentQuestion = hasActiveQuestions
-        ? questions[sessionState.current_question_index]
+        ? questions[sessionState.current_position]
         : null;
     
     const isMcqAnswerMode =
@@ -483,7 +522,7 @@ export default function StudyPage() {
         mode === 'answer' && currentQuestion
             ? currentQuestion.question_type === 'MCQ'
                 ? ''
-                : `Answer Q${sessionState.current_question_index + 1}...`
+                : `Answer Q${sessionState.current_position + 1}...`
             : mode === 'chat'
             ? 'Ask studykit anything...'
             : 'Paste notes or attach a file to get started...';
@@ -643,7 +682,7 @@ export default function StudyPage() {
                         <div className="sp-question-card">
                             <div className="sp-question-card-header">
                                 <span className="sp-question-num">
-                                    Q{sessionState.current_question_index + 1} of {questionCount}
+                                    Q{sessionState.current_position + 1} of {questionCount}
                                 </span>
                                 <span className="sp-question-type-badge">{currentQuestion.question_type}</span>
                             </div>
@@ -716,23 +755,52 @@ export default function StudyPage() {
             {mode === 'complete' ? (
                 <div className="sp-completion-banner">
                     <div className="sp-completion-banner-inner">
-                        <div className="sp-completion-text">
-                            <p className="sp-completion-title">Session complete</p>
-                            <p className="sp-completion-sub">
-                                {questionCount} question{questionCount === 1 ? '' : 's'} answered
-                            </p>
-                        </div>
+                        {/* Show summary only when there are answered questions */}
+                        {/* hide count when reset was just called (questions cleared) */}
+                        {questionCount > 0 && (
+                            <div className="sp-completion-text">
+                                <p className="sp-completion-title">Session complete</p>
+                                <p className="sp-completion-sub">
+                                    {questionCount} question{questionCount === 1 ? '' : 's'} answered
+                                </p>
+                            </div>
+                        )}
+
                         <div className="sp-completion-actions">
-                            <button
-                                className="sp-completion-btn--primary"
-                                onClick={handleReset}
-                                disabled={loading}
-                            >
-                                {loading ? 'Generating...' : 'Generate new questions'}
-                            </button>
-                            <Link to="/dashboard" className="sp-completion-btn--ghost">
-                                Back to dashboard
-                            </Link>
+                            {/* Guidance input for regeneration */}
+                            <textarea
+                                className="sp-regenerate-input"
+                                placeholder="Optional: guide the next set (e.g. 'focus on thermodynamics')"
+                                rows={2}
+                                id="regenerate-guidance"
+                            />
+
+                            <div className="sp-completion-btn-row">
+                                {/*regenerate from existing study set */}
+                                <button
+                                    className="sp-completion-btn--primary"
+                                    onClick={() => {
+                                        const guidance = document.getElementById('regenerate-guidance')?.value ?? '';
+                                        handleRegenerate(guidance);
+                                    }}
+                                    disabled={loading}
+                                >
+                                    {loading ? 'Generating...' : 'Regenerate questions'}
+                                </button>
+
+                                {/* upload new material — drops to idle for upload flow */}
+                                <button
+                                    className="sp-completion-btn--secondary"
+                                    onClick={() => handleAddMaterial()}
+                                    disabled={loading}
+                                >
+                                    Add new material
+                                </button>
+
+                                <Link to="/dashboard" className="sp-completion-btn--ghost">
+                                    Back to dashboard
+                                </Link>
+                            </div>
                         </div>
                     </div>
                 </div>

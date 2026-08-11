@@ -1,15 +1,3 @@
--- =============================================================================
--- RPC FUNCTIONS — add SECURITY DEFINER so they bypass RLS internally.
--- This keeps appuser permissions minimal (no INSERT on questions/elo_history/
--- answer_attempts/chat_messages directly) while still enforcing ownership via
--- the session check inside each function.
---
--- IMPORTANT: each function must validate that the session belongs to the
--- calling user BEFORE mutating anything. The check below uses auth.uid()
--- which is available inside SECURITY DEFINER functions when called via the
--- Supabase user-scoped client (JWT is still present on the connection).
--- =============================================================================
- 
 CREATE OR REPLACE FUNCTION append_chat_turn(
     p_session_id UUID,
     p_user_content TEXT,
@@ -21,7 +9,6 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-    -- Ownership check: ensure caller owns this session
     IF NOT EXISTS (
         SELECT 1 FROM sessions
         WHERE session_id = p_session_id
@@ -29,15 +16,15 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'session_not_found_or_forbidden';
     END IF;
- 
+
     INSERT INTO chat_messages (session_id, role, content)
     VALUES
         (p_session_id, 'user',      p_user_content),
         (p_session_id, 'assistant', p_assistant_content);
 END;
 $$;
- 
- 
+
+
 CREATE OR REPLACE FUNCTION reset_session(p_session_id UUID)
 RETURNS void
 LANGUAGE plpgsql
@@ -52,87 +39,32 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'session_not_found' USING DETAIL = p_session_id::text;
     END IF;
- 
+
     UPDATE sessions
-    SET current_question_index = 0,
-        last_active_at = now()
+    SET current_position = 0,
+        last_active_at   = now()
+    WHERE session_id = p_session_id;
+
+    -- Reset all session_questions back to unseen so the session can be replayed
+    UPDATE session_questions
+    SET status = 'unseen'
     WHERE session_id = p_session_id;
 END;
 $$;
- 
- 
-CREATE OR REPLACE FUNCTION replace_questions_and_finalize(
-    p_session_id          UUID,
-    p_questions           JSONB,
-    p_generation_input_id UUID    DEFAULT NULL,
-    p_topics_covered      JSONB   DEFAULT NULL,
-    p_user_id             UUID DEFAULT NULL
-)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM sessions
-        WHERE session_id = p_session_id
-        AND user_id = p_user_id
-    ) THEN
-        RAISE EXCEPTION 'session_not_found_or_forbidden';
-    END IF;
- 
-    UPDATE sessions
-    SET current_question_index = 0,
-        questions_count        = jsonb_array_length(p_questions),
-        last_active_at         = now()
-    WHERE session_id = p_session_id;
- 
-    DELETE FROM questions WHERE session_id = p_session_id;
- 
-    INSERT INTO questions (
-        session_id, question_id, position, question_type, prompt,
-        choices, correct_choice_index, correct_answer, rubric_points,
-        explanation, topic_difficulties
-    )
-    SELECT
-        p_session_id,
-        q->>'question_id',
-        (q->>'position')::int,
-        q->>'question_type',
-        q->>'prompt',
-        (q->'choices')::jsonb,
-        (q->>'correct_choice_index')::int,
-        q->>'correct_answer',
-        (q->'rubric_points')::jsonb,
-        q->>'explanation',
-        (q->'topic_difficulties')::jsonb
-    FROM jsonb_array_elements(p_questions) AS q;
- 
-    IF p_generation_input_id IS NOT NULL THEN
-        UPDATE generation_inputs
-        SET questions_generated = true
-        WHERE generation_input_id = p_generation_input_id;
- 
-        INSERT INTO generation_topics (generation_input_id, topic)
-        SELECT p_generation_input_id, t.value::text
-        FROM jsonb_array_elements_text(p_topics_covered) AS t;
-    END IF;
-END;
-$$;
- 
- 
+
+
 CREATE OR REPLACE FUNCTION submit_answer(
-    p_session_id   UUID,
-    p_question_id  TEXT,
-    p_response     TEXT,
-    p_score        FLOAT,
-    p_correct      BOOLEAN,
-    p_feedback     TEXT,
+    p_session_id    UUID,
+    p_user_id       UUID,
+    p_question_id   UUID,       -- internal questions.id UUID
+    p_response      TEXT,
+    p_score         FLOAT,
+    p_correct       BOOLEAN,
+    p_feedback      TEXT,
     p_misconception TEXT,
-    p_next_index   INT,
-    p_topic_stats  JSONB,
-    p_elo_history  JSONB
+    p_next_position INT,
+    p_topic_stats   JSONB,
+    p_elo_history   JSONB
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -140,19 +72,21 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+    -- Ownership check: user must own session and match auth.uid()
     IF NOT EXISTS (
         SELECT 1 FROM sessions
         WHERE session_id = p_session_id
-          AND user_id = auth.uid()
+          AND user_id    = p_user_id
+          AND p_user_id  = auth.uid()
     ) THEN
         RAISE EXCEPTION 'session_not_found_or_forbidden';
     END IF;
- 
+
     INSERT INTO answer_attempts
         (session_id, question_id, response, score, correct, feedback, misconception)
     VALUES
         (p_session_id, p_question_id, p_response, p_score, p_correct, p_feedback, p_misconception);
- 
+
     INSERT INTO elo_history
         (session_id, question_id, topic, previous_elo, new_elo, elo_delta,
          previous_p_known, new_p_known, reason)
@@ -160,30 +94,154 @@ BEGIN
         p_session_id,
         p_question_id,
         h->>'topic',
-        (h->>'previous_elo')::int,
-        (h->>'new_elo')::int,
+        (h->>'previous_elo')::smallint,
+        (h->>'new_elo')::smallint,
         (h->>'elo_delta')::float,
         (h->>'previous_p_known')::float,
         (h->>'new_p_known')::float,
         h->>'reason'
     FROM jsonb_array_elements(p_elo_history) AS h;
- 
+
+    -- Advance session position
     UPDATE sessions
-    SET current_question_index = p_next_index,
-        last_active_at         = now()
+    SET current_position = p_next_position,
+        last_active_at   = now()
     WHERE session_id = p_session_id;
- 
-    INSERT INTO topic_stats (session_id, topic, elo, p_known, attempts)
+
+    -- Mark question as active in this session
+    UPDATE session_questions
+    SET status = 'active'
+    WHERE session_id  = p_session_id
+      AND question_id = p_question_id;
+
+    -- Update scheduling state on the question itself
+    UPDATE question_scheduling
+    SET last_attempted_at = now(),
+        times_seen        = times_seen + 1
+    WHERE question_id = p_question_id
+      AND user_id     = p_user_id;
+
+    -- Insert scheduling row if first time seeing this question
+    INSERT INTO question_scheduling (user_id, question_id, times_seen, last_attempted_at)
+    VALUES (p_user_id, p_question_id, 1, now())
+    ON CONFLICT (user_id, question_id) DO NOTHING;
+
+    -- topic_stats now user-scoped, not session-scoped
+    INSERT INTO topic_stats (user_id, topic, elo, p_known, attempts)
     SELECT
-        p_session_id,
+        p_user_id,
         s->>'topic',
-        (s->>'elo')::int,
+        (s->>'elo')::smallint,
         (s->>'p_known')::float,
         (s->>'attempts')::int
     FROM jsonb_array_elements(p_topic_stats) AS s
-    ON CONFLICT (session_id, topic) DO UPDATE
+    ON CONFLICT (user_id, topic) DO UPDATE
         SET elo      = EXCLUDED.elo,
             p_known  = EXCLUDED.p_known,
             attempts = EXCLUDED.attempts;
+END;
+$$;
+
+
+-- Replaces replace_questions_and_finalize — questions now live in study sets,
+-- session_questions is the join table, finalization links session to study set
+CREATE OR REPLACE FUNCTION finalize_generation(
+    p_session_id          UUID,
+    p_user_id             UUID,
+    p_study_set_id        UUID,
+    p_generation_input_id UUID DEFAULT NULL,
+    p_topics_covered      JSONB DEFAULT NULL
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM sessions
+        WHERE session_id = p_session_id
+          AND user_id    = p_user_id
+    ) THEN
+        RAISE EXCEPTION 'session_not_found_or_forbidden';
+    END IF;
+
+    -- Link session to study set and reset position for new question queue
+    UPDATE sessions
+    SET study_set_id     = p_study_set_id,
+        current_position = 0,
+        last_active_at   = now()
+    WHERE session_id = p_session_id;
+
+    IF p_generation_input_id IS NOT NULL THEN
+        UPDATE generation_inputs
+        SET questions_generated = true,
+            status              = 'completed'
+        WHERE generation_input_id = p_generation_input_id;
+
+        IF p_topics_covered IS NOT NULL THEN
+            INSERT INTO generation_topics (generation_input_id, topic)
+            SELECT p_generation_input_id, t.value::text
+            FROM jsonb_array_elements_text(p_topics_covered) AS t;
+        END IF;
+    END IF;
+END;
+$$;
+
+
+-- Resurfacing candidates — reads from question_scheduling for due dates,
+-- joins through study_sets to scope to the right pool
+CREATE OR REPLACE FUNCTION get_resurfacing_candidates(p_study_set_id UUID)
+RETURNS TABLE (
+    id                   UUID,
+    question_id          TEXT,
+    study_set_id         UUID,
+    generation_input_id  UUID,
+    question_type        TEXT,
+    prompt               TEXT,
+    correct_answer       TEXT,
+    explanation          TEXT,
+    topic_difficulties   JSONB,
+    choices              JSONB,
+    correct_choice_index INTEGER,
+    rubric_points        JSONB,
+    last_attempted_at    TIMESTAMP WITH TIME ZONE,
+    times_seen           INTEGER,
+    topics               TEXT[]
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        q.id,
+        q.question_id,
+        q.study_set_id,
+        q.generation_input_id,
+        q.question_type,
+        q.prompt,
+        q.correct_answer,
+        q.explanation,
+        q.topic_difficulties,
+        q.choices,
+        q.correct_choice_index,
+        q.rubric_points,
+        qs.last_attempted_at,
+        COALESCE(qs.times_seen, 0)::integer,
+        ARRAY(
+            SELECT jsonb_object_keys(q.topic_difficulties)
+        ) AS topics
+    FROM questions q
+    LEFT JOIN question_scheduling qs
+        ON qs.question_id = q.id
+        AND qs.user_id    = auth.uid()
+    WHERE q.study_set_id = p_study_set_id
+      AND qs.last_attempted_at IS NOT NULL  -- only questions already seen
+      AND (
+          qs.due_at IS NULL
+          OR qs.due_at <= now()
+      );
 END;
 $$;

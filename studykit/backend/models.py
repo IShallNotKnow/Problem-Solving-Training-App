@@ -22,7 +22,10 @@ class GenerationStatus(str, Enum):
 
 
 class Question(BaseModel):
-    question_id: str
+    id: UUID | None = None                      # internal db uuid, null when model-generated
+    question_id: str                            # model-generated, unique within study_set + generation_input
+    study_set_id: UUID | None = None            # which study set owns this question
+    generation_input_id: UUID | None = None     # which generation run produced this question
     question_type: Literal["MCQ", "FRQ"]
     topic_difficulties: dict[str, int]
     prompt: str
@@ -31,6 +34,7 @@ class Question(BaseModel):
     choices: list[str] | None = None
     correct_choice_index: int | None = None
     rubric_points: list[str] | None = None
+    # position and scheduling state removed — now in session_questions and question_scheduling
 
     @property
     def topics(self) -> list[str]:
@@ -44,7 +48,6 @@ class Question(BaseModel):
     def validate_question_type(self) -> "Question":
         if not self.topic_difficulties:
             raise ValueError(f"{self.question_id}: topic_difficulties must not be empty")
-
         for topic, difficulty in self.topic_difficulties.items():
             if not (300 <= difficulty <= 3000):
                 raise ValueError(
@@ -63,6 +66,30 @@ class Question(BaseModel):
             if self.choices:
                 raise ValueError(f"{self.question_id}: FRQ should not have choices")
         return self
+
+
+class SessionQuestion(BaseModel):
+    """Join table row — the scheduler's selection for one session."""
+    id: UUID
+    session_id: UUID
+    question_id: UUID                           # references questions(id)
+    position: int
+    source: Literal["generated", "resurfaced"]
+    status: Literal["unseen", "active", "mastered", "due"]
+    question: Question | None = None            # populated when loaded with join
+
+
+class QuestionScheduling(BaseModel):
+    """FSRS state per user-question pair."""
+    id: UUID | None = None
+    user_id: UUID
+    question_id: UUID
+    due_at: datetime | None = None
+    stability: float = 0.0
+    difficulty: float = 0.3
+    retrievability: float = 1.0
+    times_seen: int = 0
+    last_attempted_at: datetime | None = None
 
 
 class TopicResult(BaseModel):
@@ -130,26 +157,27 @@ class GenerationResult(BaseModel):
 
 class SessionState(BaseModel):
     session_id: UUID
+    study_set_id: UUID | None = None            # which study set this session draws from
     label: str
-    current_question_index: int = 0
+    current_position: int = 0                  # renamed from current_question_index — position in session_questions
     topic_stats: dict[str, TopicStats] = Field(default_factory=dict)
-    questions: list[Question] = Field(default_factory=list)
+    questions: list[Question] = Field(default_factory=list)   # loaded via session_questions join
     history: list[QuestionResult] = Field(default_factory=list)
     chat_history: list[dict] = Field(default_factory=list)
     created_at: datetime | None = None
 
     @property
     def current_question(self) -> Question | None:
-        if 0 <= self.current_question_index < len(self.questions):
-            return self.questions[self.current_question_index]
+        if 0 <= self.current_position < len(self.questions):
+            return self.questions[self.current_position]
         return None
 
     @property
     def questions_count(self) -> int:
-        return len(self.questions) if self.questions else 0
+        return len(self.questions)
 
     def advance(self) -> None:
-        self.current_question_index += 1
+        self.current_position += 1
 
     def get_topic_elo(self, topics: list[str]) -> dict:
         return {t: self.topic_stats[t].elo if t in self.topic_stats else 800 for t in topics}
@@ -180,9 +208,9 @@ class SessionContext(BaseModel):
 
 
 class GenerateRequest(BaseModel):
+    study_set_id: UUID                          # generation now targets a study set, not a session
     label: str
     raw_markdown: str = ""
-    pdf_path: str = ""
     topic_profile: dict | None = None
 
 
@@ -213,11 +241,20 @@ class AnswerResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    current_question_index: int
+    current_position: int                       # renamed from current_question_index
+
+
+class StudySetSummary(BaseModel):               # new — for listing study sets
+    study_set_id: UUID
+    label: str
+    created_at: datetime | None = None
+    question_count: int = 0
+    generation_count: int = 0
 
 
 class UploadResponse(BaseModel):
-    session_id: UUID
+    study_set_id: UUID                          # upload now returns study_set_id, not session_id
+    generation_input_id: UUID
     content: str
     raw_markdown: str
     pdf_path: str
@@ -225,19 +262,22 @@ class UploadResponse(BaseModel):
 
 class SessionSummary(BaseModel):
     session_id: UUID
+    study_set_id: UUID | None = None
     label: str
-    current_question_index: int = 0
-    questions_count: int = 0
+    current_position: int = 0                  # renamed
     last_active_at: datetime | None = None
     created_at: datetime | None = None
 
 
 class QuestionDTO(BaseModel):
+    id: UUID | None = None                      # internal uuid — needed for answer_attempts FK
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
     prompt: str
     choices: list[str] | None = None
     topic_difficulties: dict[str, int]
+    position: int = 0                           # from session_questions.position
+    status: str = "unseen"                      # from session_questions.status
 
 
 class GenerationResultDTO(BaseModel):
@@ -249,8 +289,9 @@ class GenerationResultDTO(BaseModel):
 
 class SessionStateDTO(BaseModel):
     session_id: UUID
+    study_set_id: UUID | None = None
     label: str
-    current_question_index: int = 0
+    current_position: int = 0
     topic_stats: dict[str, TopicStats] = Field(default_factory=dict)
     questions: list[QuestionDTO] = Field(default_factory=list)
     history: list[QuestionResult] = Field(default_factory=list)
@@ -258,7 +299,7 @@ class SessionStateDTO(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas
+# Tool schemas — unchanged
 # ---------------------------------------------------------------------------
 
 QUESTION_GENERATION_TOOL = {
@@ -395,11 +436,7 @@ QUESTION_VALIDATION_TOOL = {
                                 ),
                             },
                         },
-                        "required": [
-                            "question_id",
-                            "approved",
-                            "feedback",
-                        ],
+                        "required": ["question_id", "approved", "feedback"],
                         "additionalProperties": False,
                     },
                 }
@@ -444,9 +481,7 @@ ANSWER_VALIDATION_TOOL = {
                             },
                             "misconception": {
                                 "type": ["string", "null"],
-                                "description": (
-                                    "Short tag for a recurring error type if present, else null."
-                                ),
+                                "description": "Short tag for a recurring error type if present, else null.",
                             },
                             "topic_results": {
                                 "type": "array",
@@ -466,66 +501,22 @@ ANSWER_VALIDATION_TOOL = {
                                                 "do not rephrase, translate, or alter punctuation."
                                             ),
                                         },
-                                        "score": {
-                                            "type": "number",
-                                            "minimum": 0.0,
-                                            "maximum": 1.0,
-                                            "description": (
-                                                "0.0 to 1.0 — how well the student "
-                                                "demonstrated understanding of this topic."
-                                            ),
-                                        },
+                                        "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                                         "correct": {"type": "boolean"},
-                                        "confidence": {
-                                            "type": "number",
-                                            "minimum": 0.0,
-                                            "maximum": 1.0,
-                                            "description": "0.0 to 1.0 — confidence in this topic assessment.",
-                                        },
-                                        "adaptation_signal": {
-                                            "type": "number",
-                                            "minimum": -1.0,
-                                            "maximum": 1.0,
-                                            "description": (
-                                                "Directional evidence for difficulty adjustment. "
-                                                "-1.0 means well below current difficulty, "
-                                                "0.0 means expected performance, "
-                                                "+1.0 means well above current difficulty."
-                                            ),
-                                        },
-                                        "misconception": {
-                                            "type": ["string", "null"],
-                                            "description": (
-                                                "Short tag for a recurring error type "
-                                                "specific to this topic if identifiable."
-                                            ),
-                                        },
-                                        "feedback": {
-                                            "type": "string",
-                                            "description": "What specifically went wrong or right on this concept.",
-                                        },
+                                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                                        "adaptation_signal": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+                                        "misconception": {"type": ["string", "null"]},
+                                        "feedback": {"type": "string"},
                                     },
                                     "required": [
-                                        "topic",
-                                        "score",
-                                        "correct",
-                                        "confidence",
-                                        "adaptation_signal",
-                                        "misconception",
-                                        "feedback",
+                                        "topic", "score", "correct", "confidence",
+                                        "adaptation_signal", "misconception", "feedback",
                                     ],
                                     "additionalProperties": False,
                                 },
                             },
                         },
-                        "required": [
-                            "question_id",
-                            "score",
-                            "correct",
-                            "feedback",
-                            "misconception",
-                            "topic_results",
-                        ],
+                        "required": ["question_id", "score", "correct", "feedback", "misconception", "topic_results"],
                         "additionalProperties": False,
                     },
                 }
@@ -559,16 +550,10 @@ IMAGE_FILTERING_TOOL = {
                             },
                             "description": {
                                 "type": ["string", "null"],
-                                "description": (
-                                    "Concise description of the academic content. "
-                                    "Null if keep is false."
-                                ),
+                                "description": "Concise description of the academic content. Null if keep is false.",
                             },
                         },
-                        "required": [
-                            "keep",
-                            "description",
-                        ],
+                        "required": ["keep", "description"],
                         "additionalProperties": False,
                     },
                 }

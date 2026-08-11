@@ -1,24 +1,27 @@
--- session lookup by user (list_sessions, verify_ownership)
-CREATE INDEX idx_sessions_user_id ON sessions (user_id);
-CREATE INDEX idx_sessions_last_active ON sessions (last_active_at DESC);
+-- study_sets
+CREATE INDEX idx_study_sets_user_id
+  ON study_sets (user_id);
 
--- questions ordered by position (get)
-CREATE INDEX idx_questions_session_position ON questions (session_id, position);
+-- session_questions
+CREATE INDEX idx_session_questions_session_id
+  ON session_questions (session_id);
+CREATE INDEX idx_session_questions_position
+  ON session_questions (session_id, position);
+CREATE INDEX idx_session_questions_question_id
+  ON session_questions (question_id);
 
--- answer history lookup (idempotency check in submit_answer)
-CREATE INDEX idx_answer_attempts_session_question ON answer_attempts (session_id, question_id);
+-- question_scheduling
+CREATE INDEX idx_question_scheduling_user_id
+  ON question_scheduling (user_id);
+CREATE INDEX idx_question_scheduling_due_at
+  ON question_scheduling (user_id, due_at ASC NULLS FIRST);
 
--- elo history per question (get_topic_updates_for_question)
-CREATE INDEX idx_elo_history_session_question ON elo_history (session_id, question_id);
+-- topic_stats now user-scoped
+CREATE INDEX idx_topic_stats_user_id
+  ON topic_stats (user_id);
 
--- elo history per topic (get_recent_topic_history)
-CREATE INDEX idx_elo_history_session_topic_time ON elo_history (session_id, topic, created_at DESC);
-
--- chat messages time-ordered per session
-CREATE INDEX idx_chat_messages_session_time ON chat_messages (session_id, created_at DESC);
-
--- generation inputs per session (get_upload_context)
-CREATE INDEX idx_generation_inputs_session ON generation_inputs (session_id, created_at DESC);
-
--- generation topics for profile building
-CREATE INDEX idx_generation_topics_input ON generation_topics (generation_input_id);
+-- questions now scoped to study_set
+CREATE INDEX idx_questions_study_set_id
+  ON questions (study_set_id);
+CREATE INDEX idx_questions_generation_input_id
+  ON questions (generation_input_id);

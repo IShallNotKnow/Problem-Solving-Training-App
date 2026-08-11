@@ -507,6 +507,7 @@ async def stream_questions(
     async def generate():
         pubsub = valkey.pubsub()
         await pubsub.subscribe(f"session:{str(session_id)}:questions")
+        TERMINAL_STATUSES = ("generated", "failed_validation", "failed")
 
         try:
             questions = await session_store.get_questions(session_id)
@@ -520,7 +521,7 @@ async def stream_questions(
                 yield f"event: question_approved\ndata: {q.model_dump_json()}\n\n"
 
             status = await valkey.get(f"job_status:{str(session_id)}")
-            if status and status in ("generated", "failed_validation", "failed"):
+            if status and status in TERMINAL_STATUSES:
                 yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
                 return
 
@@ -555,7 +556,7 @@ async def stream_questions(
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
                 now = loop.time()
-                if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
+                if (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
                     last_status_check = now
                     while True:
@@ -573,7 +574,9 @@ async def stream_questions(
                         if r_key not in seen_ids:
                             seen_ids.add(r_key)
                             yield f"event: question_approved\ndata: {remaining['data']}\n\n"
-                    yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
+                    if status in TERMINAL_STATUSES: 
+                        yield ( f"event: job_complete\n" f"data: {json.dumps({'status': status})}\n\n" ) 
+                        break
                     break
         finally:
             await pubsub.unsubscribe(f"session:{str(session_id)}:questions")

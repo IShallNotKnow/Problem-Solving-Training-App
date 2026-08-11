@@ -98,6 +98,11 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             async for item in question_generator.generate_questions(
                 content, raw_images, storage_manager, state.study_set_id, profile,
             ):
+                logger.info(
+                    "[worker] generator yielded type=%s value=%r",
+                    type(item).__name__,
+                    item,
+                )
                 if isinstance(item, Question):
                     logger.info(f"[worker] publishing question {item.question_id} mid-generation")
                     await valkey.publish(
@@ -106,6 +111,12 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
                     )
                 elif isinstance(item, GenerationResult):
                     result = item
+                else:
+                    logger.warning(
+                        "[worker] UNKNOWN generator output: type=%s value=%r",
+                        type(item).__name__,
+                        item,
+                    )
 
             if result is None:
                 raise ValueError("Generator completed without returning a result")

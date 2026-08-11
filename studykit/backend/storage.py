@@ -28,14 +28,14 @@ class StorageManager:
         self.SAFE_FILENAME = re.compile(r"^[\w\-]+\.(png|jpg|jpeg|webp)$")
 
     async def list_images(self, study_set_id: UUID) -> list[dict]:
-        logger.debug(f"[storage] listing images for session {study_set_id}")
+        logger.debug(f"[storage] listing images for study set {study_set_id}")
         response = await (
             self.db.table("generation_images")
             .select("*, generation_inputs!inner(study_set_id)")
             .eq("generation_inputs.study_set_id", str(study_set_id))
             .execute()
         )
-        logger.info(f"[storage] found {len(response.data)} images for session {study_set_id}")
+        logger.info(f"[storage] found {len(response.data)} images for study set {study_set_id}")
         return response.data
 
     async def store_pdf(self, study_set_id: UUID, pdf_bytes: bytes, filename: str) -> str:
@@ -84,7 +84,7 @@ class StorageManager:
         self, study_set_id: UUID, images: list[dict], image_descriptions: dict[str, str]
     ) -> list[dict]:
         ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp", "image/jpg"}
-        logger.info(f"[storage] storing {len(images)} images for session {study_set_id}")
+        logger.info(f"[storage] storing {len(images)} images for set {study_set_id}")
 
         async with httpx.AsyncClient() as http_client:
 
@@ -131,9 +131,9 @@ class StorageManager:
             succeeded = [r for r in results if isinstance(r, dict)]
             if failed:
                 logger.error(
-                    f"[storage] {len(failed)}/{len(images)} images failed to store for session {study_set_id}: {failed}"
+                    f"[storage] {len(failed)}/{len(images)} images failed to store for study set {study_set_id}: {failed}"
                 )
             logger.info(
-                f"[storage] stored {len(succeeded)}/{len(images)} images successfully for session {study_set_id}"
+                f"[storage] stored {len(succeeded)}/{len(images)} images successfully for study set {study_set_id}"
             )
             return succeeded

@@ -41,6 +41,7 @@ from dependencies import (
     get_text_filter,
     get_user_supabase,
 )
+from difficulty_engine import DifficultyController
 from exceptions import DatabaseError, RateLimitExceeded, SessionNotFoundError, StorageError
 from generator import REDIS_SETTINGS
 from models import (
@@ -61,7 +62,6 @@ from processing import (
     AnswerValidator,
     AsyncPDFProcessor,
     ConceptExtractor,
-    DifficultyController,
     ImageFilter,
     StudyChatAssistant,
     TextFilter,

@@ -3,11 +3,11 @@ from fastapi import Depends, Request
 from openai import AsyncOpenAI
 
 from config import settings
+from difficulty_engine import DifficultyController
 from processing import (
     AnswerValidator,
     AsyncPDFProcessor,
     ConceptExtractor,
-    DifficultyController,
     ImageFilter,
     QuestionGenerator,
     StudyChatAssistant,

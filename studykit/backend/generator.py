@@ -96,7 +96,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         result = None
         try:
             async for item in question_generator.generate_questions(
-                content, raw_images, storage_manager, ss_id, profile,
+                content, raw_images, storage_manager, state.study_set_id, profile,
             ):
                 if isinstance(item, Question):
                     logger.info(f"[worker] publishing question {item.question_id} mid-generation")

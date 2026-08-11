@@ -511,9 +511,11 @@ class SessionStore:
         ]
 
         if generation_input_id is not None:
+            input_status = "completed" if status == GenerationStatus.GENERATED else "failed"
+            
             ops.append(
                 self.db.table("generation_inputs")
-                .update({"questions_generated": True, "status": status.value})
+                .update({"questions_generated": True, "status": input_status})
                 .eq("generation_input_id", str(generation_input_id))
                 .execute()
             )

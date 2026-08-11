@@ -104,11 +104,19 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
                     item,
                 )
                 if isinstance(item, Question):
-                    logger.info(f"[worker] publishing question {item.question_id} mid-generation")
-                    await valkey.publish(
-                        f"session:{session_id}:questions",
-                        QuestionDTO.model_validate(item, from_attributes=True).model_dump_json(),
+                    channel = f"session:{session_id}:questions"
+                    payload = (
+                        QuestionDTO
+                        .model_validate(item, from_attributes=True)
+                        .model_dump_json()
                     )
+
+                    logger.info(
+                        "[worker] PUBLISHING question mid_generation=%s channel=%s",
+                        item.question_id,
+                        channel,
+                    )
+                    await valkey.publish(channel, payload)
                 elif isinstance(item, GenerationResult):
                     result = item
                 else:

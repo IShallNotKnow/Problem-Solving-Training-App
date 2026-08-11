@@ -506,7 +506,10 @@ async def stream_questions(
 
     async def generate():
         pubsub = valkey.pubsub()
-        await pubsub.subscribe(f"session:{str(session_id)}:questions")
+        channel = f"session:{str(session_id)}:questions"
+        logger.info("[SSE] subscribing to channel=%s", channel)
+        await pubsub.subscribe(channel)
+        logger.info("[SSE] SUBSCRIBED to channel=%s", channel)
         TERMINAL_STATUSES = ("generated", "failed_validation", "failed")
 
         try:
@@ -548,6 +551,11 @@ async def stream_questions(
                         last_heartbeat = now
 
                 if message:
+                    logger.info(
+                        "[SSE] RECEIVED message channel=%s data=%s",
+                        message.get("channel"),
+                        message.get("data"),
+                    )
                     last_heartbeat = loop.time()
                     q_data = json.loads(message["data"])
                     key = _dedup_key(q_data)
@@ -574,10 +582,24 @@ async def stream_questions(
                         if r_key not in seen_ids:
                             seen_ids.add(r_key)
                             yield f"event: question_approved\ndata: {remaining['data']}\n\n"
+
+                    logger.info(
+                        "[SSE] STATUS CHECK session=%s status=%s",
+                        session_id,
+                        status,
+                    )
                     if status in TERMINAL_STATUSES: 
+                        logger.info(
+                            "[SSE] TERMINAL — closing session=%s status=%s",
+                            session_id,
+                            status,
+                        )
                         yield ( f"event: job_complete\n" f"data: {json.dumps({'status': status})}\n\n" ) 
                         break
-                    break
+                    logger.info(
+                        "[SSE] STILL IN PROGRESS — continuing session=%s",
+                        session_id,
+                    )
         finally:
             await pubsub.unsubscribe(f"session:{str(session_id)}:questions")
 

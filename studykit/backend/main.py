@@ -539,6 +539,7 @@ async def stream_questions(
                 if await request.is_disconnected():
                     break
 
+                message = None
                 try:
                     message = await asyncio.wait_for(
                         pubsub.get_message(ignore_subscribe_messages=True),
@@ -570,7 +571,7 @@ async def stream_questions(
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
                 now = loop.time()
-                if (now - last_status_check) > STATUS_CHECK_INTERVAL:
+                if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
                     last_status_check = now
                     while True:

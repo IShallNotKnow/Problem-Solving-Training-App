@@ -561,6 +561,12 @@ async def stream_questions(
                     key = _dedup_key(q_data)
                     if key not in seen_ids:
                         seen_ids.add(key)
+
+                        logger.info(
+                            "[SSE] SENDING question=%s TO CLIENT",
+                            q_data.get("question_id"),
+                        )
+
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
                 now = loop.time()

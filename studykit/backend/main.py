@@ -505,6 +505,7 @@ async def stream_questions(
     valkey: Valkey = request.app.state.valkey
 
     async def generate():
+        logger.info("[SSE] generator started for session=%s", session_id)
         pubsub = valkey.pubsub()
         channel = f"session:{str(session_id)}:questions"
         logger.info("[SSE] subscribing to channel=%s", channel)

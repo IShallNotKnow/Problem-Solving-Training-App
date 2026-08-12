@@ -215,8 +215,9 @@ export default function StudyPage() {
 
                 onmessage(e) {
                     console.log('[stream] onmessage', { event: e.event, dataLength: e.data?.length });
+                    if (e.event === 'heartbeat') { return; }
                     
-                    if (e.event === 'question_approved') {
+                    else if (e.event === 'question_approved') {
                         const question = JSON.parse(e.data);
                         questions.push(question);
                         console.log('[stream] question received', { 

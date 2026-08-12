@@ -548,7 +548,7 @@ async def stream_questions(
                 except asyncio.TimeoutError:
                     now = loop.time()
                     if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                        yield ": ping\n\n"
+                        yield "event: heartbeat\ndata: {}\n\n" # perhaps trying older sse architecture for generate() could resolve things as cloud flare seemed to just not time out?
                         last_heartbeat = now
 
                 if message:

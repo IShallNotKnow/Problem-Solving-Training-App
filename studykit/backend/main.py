@@ -543,7 +543,7 @@ async def stream_questions(
                 try:
                     message = await asyncio.wait_for(
                         pubsub.get_message(ignore_subscribe_messages=True),
-                        timeout=1.0,
+                        timeout=2.0,
                     )
                 except asyncio.TimeoutError:
                     now = loop.time()

@@ -1155,8 +1155,8 @@ class StudyChatAssistant:
             f"[chat] responding, current_question={session_context.current_question.question_id if session_context.current_question else None}, history_turns={len(session_context.chat_history)}"
         )
         question_context = (
-            json.dumps(session_context.current_question.model_dump(), indent=2)
-            if session_context.current_question
+            json.dumps(session_context.current_question.model_dump(mode='json'), indent=2)
+            if  session_context.current_question
             else "No active question"
         )
         system_prompt = f"""You are a study assistant helping a student work through practice questions.

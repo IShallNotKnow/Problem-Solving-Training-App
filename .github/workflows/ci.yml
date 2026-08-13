@@ -25,4 +25,4 @@ jobs:
 
       - name: Run tests
         working-directory: ./studykit
-        run: python -m pytest backend/tests/test_difficulty.py -v
+        run: python -m pytest backend/tests/ -v

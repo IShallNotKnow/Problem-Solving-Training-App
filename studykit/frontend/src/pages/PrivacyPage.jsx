@@ -94,7 +94,7 @@ const sections = [
                 <ul>
                     <li><strong>Account data</strong> — retained until you delete your account.</li>
                     <li><strong>Study sessions and content</strong> — retained until you delete the session or your account.</li>
-                    <li><strong>Uploaded files</strong> — PDFs and images are deleted from storage when the associated session is deleted or your account is closed.</li>
+                    <li><strong>Uploaded files</strong> — PDFs and images references are deleted from storage when you delete an account, though the actual file data will be maintained for in-house model training to improve the service.</li>
                     <li><strong>Usage data</strong> — retained for a short period for rate limiting and diagnostic purposes.</li>
                 </ul>
                 <p>To request deletion of your account and all associated data, contact us at <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>. We will process your request within 30 days.</p>

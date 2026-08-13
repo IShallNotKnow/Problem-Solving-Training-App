@@ -5,6 +5,7 @@ venv/
 test_files/
 node_modules/
 .ruff_cache
+.pytest_cache
 
 # Logs
 logs

@@ -596,7 +596,7 @@ async def stream_questions(
                         session_id,
                         status,
                     )
-                    if status in TERMINAL_STATUSES: 
+                    if status and status in TERMINAL_STATUSES: 
                         logger.info(
                             "[SSE] TERMINAL — closing session=%s status=%s",
                             session_id,

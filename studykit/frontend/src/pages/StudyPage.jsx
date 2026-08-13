@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTheme } from '../context/ThemeContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
-import { getAccessToken, apiFetch, apiUpload } from '../utils/api.js';
+import { getAccessToken, apiFetch, apiUpload, apiBaseUrl } from '../utils/api.js';
 import { FiPaperclip, FiArrowLeft, FiSun, FiMoon, FiAlertTriangle } from 'react-icons/fi';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import MarkdownMessage from '../components/MarkdownMessage.jsx';
@@ -173,10 +173,16 @@ export default function StudyPage() {
 
         } catch (err) {
             console.error('[generate] caught error', err);
-            setRetryError({
-                message: err.status < 500
+            // A missing status means the request never reached the server
+            // (network/CORS/CSP), which is a different failure than a 5xx.
+            const message =
+                err.isNetworkError || err.status === 0
                     ? err.message
-                    : 'Generation failed — please try again.',
+                    : typeof err.status === 'number' && err.status < 500
+                        ? err.message
+                        : 'Generation failed — please try again.';
+            setRetryError({
+                message,
                 onRetry: () => {
                     setRetryError(null);
                     handleGenerate(sessionId, label, rawMarkdown);
@@ -199,7 +205,7 @@ export default function StudyPage() {
             console.log('[stream] opening fetchEventSource');
 
             fetchEventSource(
-                `https://api.studykit.dev/sessions/${sessionId}/stream`, {
+                `${apiBaseUrl}/sessions/${sessionId}/stream`, {
                 headers: {
                     'Authorization': `Bearer ${token}`,
                     'Accept': 'text/event-stream',

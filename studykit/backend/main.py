@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openai import APIStatusError, BadRequestError, RateLimitError
 from pydantic import ValidationError
 from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded as SlowAPIRateLimitExceeded
 from slowapi.util import get_remote_address
 from valkey.asyncio import Valkey
 
@@ -111,7 +112,22 @@ async def lifespan(app: FastAPI):
     await app.state.valkey.aclose()
 
 
-limiter = Limiter(key_func=get_remote_address, storage_uri=settings.valkey_url)
+def client_ip(request: Request) -> str:
+    """Real client IP behind Cloudflare.
+
+    get_remote_address() alone returns the edge/proxy address, so every user
+    shares one rate-limit bucket and low limits trip almost immediately.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=client_ip, storage_uri=settings.valkey_url)
 
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
@@ -271,6 +287,41 @@ async def storage_error_handler(request: Request, exc: StorageError):
     )
 
 
+@app.exception_handler(SlowAPIRateLimitExceeded)
+async def _slowapi_rate_limit_handler(request: Request, exc: SlowAPIRateLimitExceeded):
+    """Handler for the exception slowapi actually raises.
+
+    `exceptions.RateLimitExceeded` below is a different class that slowapi never
+    raises, so without this the limiter fell through to a generic handler and the
+    response shape/headers were inconsistent with the rest of the API.
+    """
+    error_id = uuid4().hex[:8]
+    retry_after = 60
+    try:
+        retry_after = int(exc.limit.limit.get_expiry())
+    except Exception:
+        pass
+    logger.warning(
+        "RateLimitExceeded %s: client exceeded limit on %s (%s)",
+        error_id,
+        request.url.path,
+        getattr(exc, "detail", ""),
+    )
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Reset": str(retry_after),
+        },
+        content={
+            "error": "rate_limit_exceeded",
+            "detail": f"Too many requests. Please retry in {retry_after}s.",
+            "error_id": error_id,
+            "retry_after_seconds": retry_after,
+        },
+    )
+
+
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     error_id = uuid4().hex[:8]
@@ -370,7 +421,7 @@ async def create_study_set(
 
 
 @app.post("/sessions/{session_id}/upload", response_model=UploadResponse)
-@limiter.limit("1/minute")
+@limiter.limit("3/minute")
 async def upload(
     request: Request,
     session_id: UUID,
@@ -508,12 +559,15 @@ async def stream_questions(
         logger.info("[SSE] generator started for session=%s", session_id)
         pubsub = valkey.pubsub()
         channel = f"session:{str(session_id)}:questions"
-        logger.info("[SSE] subscribing to channel=%s", channel)
-        await pubsub.subscribe(channel)
-        logger.info("[SSE] SUBSCRIBED to channel=%s", channel)
         TERMINAL_STATUSES = ("generated", "failed_validation", "failed")
 
         try:
+            # Inside the try so a subscribe failure is logged and always cleaned
+            # up, instead of escaping the generator with no trace.
+            logger.info("[SSE] subscribing to channel=%s", channel)
+            await pubsub.subscribe(channel)
+            logger.info("[SSE] SUBSCRIBED to channel=%s", channel)
+
             questions = await session_store.get_questions(session_id)
             seen_ids = set()
 
@@ -529,60 +583,59 @@ async def stream_questions(
                 yield f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n"
                 return
 
-            
             loop = asyncio.get_running_loop()
             last_status_check = loop.time()
             STATUS_CHECK_INTERVAL = 3.0
             HEARTBEAT_INTERVAL = 15.0
+            MESSAGE_WAIT = 2.0
             last_heartbeat = loop.time()
 
             while True:
                 if await request.is_disconnected():
+                    logger.info("[SSE] client disconnected session=%s", session_id)
                     break
 
-                message = None
-                try:
-                    message = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    now = loop.time()
-                    if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                        yield "event: heartbeat\ndata: {}\n\n" # perhaps trying older sse architecture for generate() could resolve things as cloud flare seemed to just not time out?
-                        last_heartbeat = now
+                # `timeout` must be passed to get_message itself. Its default is
+                # 0.0 (non-blocking), which returns None instantly — wrapping it
+                # in asyncio.wait_for therefore never times out, turning this
+                # into a ~700k iterations/second busy loop and making the
+                # heartbeat branch unreachable. Cancelling a pending read via
+                # wait_for can also desynchronise the pubsub connection.
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=MESSAGE_WAIT,
+                )
 
-                if message:
+                now = loop.time()
+                if message is None:
+                    if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                        yield "event: heartbeat\ndata: {}\n\n"
+                        last_heartbeat = now
+                else:
                     logger.info(
-                        "[SSE] RECEIVED message channel=%s data=%s",
-                        message.get("channel"),
-                        message.get("data"),
+                        "[SSE] RECEIVED message channel=%s", message.get("channel")
                     )
-                    last_heartbeat = loop.time()
+                    last_heartbeat = now
                     q_data = json.loads(message["data"])
                     key = _dedup_key(q_data)
                     if key not in seen_ids:
                         seen_ids.add(key)
-
                         logger.info(
                             "[SSE] SENDING question=%s TO CLIENT",
                             q_data.get("question_id"),
                         )
-
                         yield f"event: question_approved\ndata: {message['data']}\n\n"
 
-                now = loop.time()
                 if message or (now - last_status_check) > STATUS_CHECK_INTERVAL:
                     status = await valkey.get(f"job_status:{str(session_id)}")
                     last_status_check = now
+
+                    # Drain anything already buffered so no question is lost
+                    # between the last read and closing on a terminal status.
                     while True:
-                        try:
-                            remaining = await asyncio.wait_for(
-                                pubsub.get_message(ignore_subscribe_messages=True),
-                                timeout=0.2,
-                            )
-                        except asyncio.TimeoutError:
-                            break
+                        remaining = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=0.0
+                        )
                         if remaining is None:
                             break
                         r_data = json.loads(remaining["data"])
@@ -591,32 +644,43 @@ async def stream_questions(
                             seen_ids.add(r_key)
                             yield f"event: question_approved\ndata: {remaining['data']}\n\n"
 
-                    logger.info(
-                        "[SSE] STATUS CHECK session=%s status=%s",
-                        session_id,
-                        status,
-                    )
-                    if status and status in TERMINAL_STATUSES: 
+                    if status and status in TERMINAL_STATUSES:
                         logger.info(
                             "[SSE] TERMINAL — closing session=%s status=%s",
                             session_id,
                             status,
                         )
-                        yield ( f"event: job_complete\n" f"data: {json.dumps({'status': status})}\n\n" ) 
+                        yield (
+                            f"event: job_complete\n"
+                            f"data: {json.dumps({'status': status})}\n\n"
+                        )
                         break
-                    logger.info(
-                        "[SSE] STILL IN PROGRESS — continuing session=%s",
-                        session_id,
-                    )
+        except asyncio.CancelledError:
+            logger.info("[SSE] cancelled session=%s", session_id)
+            raise
+        except Exception:
+            # Without this the traceback is swallowed inside the streaming
+            # response and the client only sees a dropped connection.
+            logger.exception("[SSE] stream failed session=%s", session_id)
+            raise
         finally:
-            await pubsub.unsubscribe(f"session:{str(session_id)}:questions")
+            # aclose() is what returns the connection to the pool. unsubscribe()
+            # alone leaves it checked out forever, so every stream leaked one
+            # Valkey connection until subscribe() started failing.
+            try:
+                await pubsub.aclose()
+            except Exception:
+                logger.warning("[SSE] pubsub cleanup failed session=%s", session_id)
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
+            # Stops nginx/proxies buffering the stream, which otherwise holds
+            # events (and heartbeats) until the response completes.
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -665,6 +729,11 @@ async def generate(
     if job is None:
         await app.state.valkey.delete(f"active_job:{session_id}")
         raise HTTPException(status_code=500, detail="Failed to enqueue job")
+
+    # Terminal statuses persist for an hour, so a regenerate can open its stream
+    # before the worker flips the flag and immediately read the *previous* run's
+    # "generated" — closing the stream instantly with zero questions.
+    await app.state.valkey.delete(f"job_status:{session_id}")
 
     await app.state.valkey.set(f"active_job:{session_id}", job.job_id, ex=3600)
     return {"job_id": job.job_id, "status": "pending"}

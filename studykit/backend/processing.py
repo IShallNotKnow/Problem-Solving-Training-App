@@ -636,16 +636,26 @@ class QuestionGenerator:
             weak = topic_profile.get("weak", [])
             unseen = topic_profile.get("unseen", [])
             parts = []
+
+            topic_elos = topic_profile.get("topic_elos", {})
             if weak:
-                parts.append(
-                    f"Prioritize questions on weak topics: {', '.join(weak)}. At least 8 of 20 questions should target these."
-                )
+                weak_with_ranges = [
+                    f"{t} (target ELO {max(300, topic_elos[t] - 100)}–{min(3000, topic_elos[t] + 300)})"
+                    if t in topic_elos else t
+                    for t in weak
+                ]
+                parts.append(f"Prioritize questions on weak topics: {', '.join(weak_with_ranges)}.")
             if strong:
+                strong_with_ranges = [
+                    f"{t} (target ELO {max(300, topic_elos[t] - 200)}–{min(3000, topic_elos[t] + 200)})"
+                    if t in topic_elos else t
+                    for t in strong
+                ]
                 parts.append(
-                    f"Include 4-6 questions on strong topics ({', '.join(strong)}) to maintain retention."
+                    f"Incorporate 4-6 questions with strong topics ({', '.join(strong_with_ranges)}) to maintain retention."
                 )
             if unseen:
-                parts.append(f"Cover unseen topics at least once each: {', '.join(unseen)}.")
+                parts.append(f"Cover unseen topics at least once each: {', '.join(unseen)} with varying difficulties (target ELO 500-1500).")
             balance_instruction = "\n\n" + " ".join(parts) if parts else ""
             logger.info(f"[generator] topic profile: strong={strong}, weak={weak}, unseen={unseen}")
 
@@ -698,6 +708,14 @@ not as the questions themselves. Avoid asking multiple questions that test the s
 in only slightly different ways. Each question should assess a meaningfully different skill, concept, or application.
 MCQ distractors must be plausible and reflect real misconceptions, with exactly one defensible correct option.
 {balance_instruction}
+
+Generate questions across these archetypes where the material supports them:
+- Comparison: compare two related concepts on a specific axis
+- Predict: given state X, what happens if Y changes
+- Diagnose: given this output/behavior, what is wrong
+- Trace: step through this algorithm/process with these inputs
+- Apply: use concept X to solve problem Y
+- Explain-why: justify why approach A is preferred to B in context C
 
 Before calling the tool, silently verify every question against the contract above and
 fix or replace any that fail. Emit only questions that pass. Return results solely via

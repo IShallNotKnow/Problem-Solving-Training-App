@@ -171,7 +171,7 @@ class SessionStore:
                 "p_elo_history": [u.model_dump() for u in updates],
                 "p_stability": new_stability,
                 "p_difficulty": new_difficulty,
-                "p_due_at": due_at,
+                "p_due_at": due_at.isoformat(),
             },
         ).execute()
         logger.info(f"[session] answer submitted successfully for question {question_id}")
@@ -429,6 +429,10 @@ class SessionStore:
                 f"[session] topic profile empty after filtering for study set {study_set_id}"
             )
             return None
+
+        filtered["topic_elos"] = state.get_topic_elo([
+            t for topics in filtered.values() for t in topics
+        ])
         logger.info(f"[session] topic profile for study set {study_set_id}: {filtered}")
         return filtered
 

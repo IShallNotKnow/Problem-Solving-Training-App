@@ -398,7 +398,6 @@ async def create_session(
     )
 
 
-
 @app.post("/sessions/{session_id}/study-set", status_code=201)
 @limiter.limit("5/minute")
 async def create_study_set(
@@ -436,14 +435,18 @@ async def upload(
     raw_markdown: str | None = Form(default=None),
 ):
     if file is None and not raw_markdown:
-        raise HTTPException(status_code=400, detail="Either a PDF file or raw text must be provided.")
+        raise HTTPException(
+            status_code=400, detail="Either a PDF file or raw text must be provided."
+        )
 
     await session_store.verify_ownership(session_id, UUID(user["sub"]))
 
     # Fetch study_set_id from session — created by /study-set endpoint during init
     state = await session_store.get(session_id)
     if state.study_set_id is None:
-        raise HTTPException(status_code=400, detail="Session has no study set — call /study-set first.")
+        raise HTTPException(
+            status_code=400, detail="Session has no study set — call /study-set first."
+        )
     study_set_id = state.study_set_id
 
     pdf_content = ""
@@ -452,7 +455,9 @@ async def upload(
     stored_images = []
 
     if file is not None:
-        logger.info(f"[endpoint] POST /sessions/{session_id}/upload user={user['sub']} filename={file.filename}")
+        logger.info(
+            f"[endpoint] POST /sessions/{session_id}/upload user={user['sub']} filename={file.filename}"
+        )
 
         content_length = file.headers.get("content-length")
         if content_length and int(content_length) > MAX_PDF_SIZE:
@@ -483,7 +488,8 @@ async def upload(
 
         if not pdf_content and not raw_markdown:
             raise HTTPException(
-                status_code=422, detail="No meaningful content could be extracted from this document."
+                status_code=422,
+                detail="No meaningful content could be extracted from this document.",
             )
 
         pdf_path, stored_images = await asyncio.gather(
@@ -612,9 +618,7 @@ async def stream_questions(
                         yield "event: heartbeat\ndata: {}\n\n"
                         last_heartbeat = now
                 else:
-                    logger.info(
-                        "[SSE] RECEIVED message channel=%s", message.get("channel")
-                    )
+                    logger.info("[SSE] RECEIVED message channel=%s", message.get("channel"))
                     last_heartbeat = now
                     q_data = json.loads(message["data"])
                     key = _dedup_key(q_data)
@@ -650,10 +654,7 @@ async def stream_questions(
                             session_id,
                             status,
                         )
-                        yield (
-                            f"event: job_complete\n"
-                            f"data: {json.dumps({'status': status})}\n\n"
-                        )
+                        yield (f"event: job_complete\ndata: {json.dumps({'status': status})}\n\n")
                         break
         except asyncio.CancelledError:
             logger.info("[SSE] cancelled session=%s", session_id)
@@ -700,7 +701,9 @@ async def generate(
     # Verify session has a study set before allowing generation
     state = await session_store.get(session_id)
     if state.study_set_id is None:
-        raise HTTPException(status_code=400, detail="Session has no study material — upload content first.")
+        raise HTTPException(
+            status_code=400, detail="Session has no study material — upload content first."
+        )
 
     existing = await app.state.valkey.get(f"active_job:{session_id}")
     if existing:
@@ -898,7 +901,7 @@ async def submit_answer(
     question_result = result.results[0]
 
     def _normalize_topic(t: str) -> str:
-        return ''.join(c for c in t if c.isprintable()).strip()
+        return "".join(c for c in t if c.isprintable()).strip()
 
     if not question_result.topic_results:
         raise HTTPException(status_code=500, detail="Grading did not return topic results")
@@ -927,13 +930,19 @@ async def submit_answer(
         f"advancing to position {state.current_position}"
     )
 
+    scheduling = await session_store.get_question_scheduling(
+        user_id=UUID(user["sub"]),
+        question_id=question.id,
+    )
+
     await session_store.submit_answer_atomic(
         session_id=session_id,
-        question_id=question.id,            # internal UUID
-        user_id=UUID(user["sub"]),          # for user-scoped topic_stats
+        question_id=question.id,  # internal UUID
+        user_id=UUID(user["sub"]),  # for user-scoped topic_stats
         response_str=response_str,
         question_result=question_result,
         next_position=state.current_position,
+        scheduling=scheduling,
         updates=updates,
         topic_stats=state.topic_stats,
     )

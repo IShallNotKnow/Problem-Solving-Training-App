@@ -119,9 +119,7 @@ class TestHeartbeatAndPolling:
         ps = Immediate()
         timed_out = False
         try:
-            await asyncio.wait_for(
-                ps.get_message(ignore_subscribe_messages=True), timeout=0.05
-            )
+            await asyncio.wait_for(ps.get_message(ignore_subscribe_messages=True), timeout=0.05)
         except asyncio.TimeoutError:
             timed_out = True
 
@@ -136,16 +134,12 @@ class TestHeartbeatAndPolling:
         assert calls, "expected get_message calls in the SSE endpoint"
         for args in calls:
             assert "timeout" in args, (
-                "every get_message call must pass an explicit timeout; "
-                "the 0.0 default busy-spins"
+                "every get_message call must pass an explicit timeout; the 0.0 default busy-spins"
             )
 
     def test_stream_does_not_wrap_get_message_in_wait_for(self):
         # Strip comments so the explanatory note about wait_for doesn't match.
-        code = "\n".join(
-            line.split("#", 1)[0]
-            for line in _stream_generator_source().splitlines()
-        )
+        code = "\n".join(line.split("#", 1)[0] for line in _stream_generator_source().splitlines())
         assert "wait_for" not in code, (
             "asyncio.wait_for around get_message never fires and cancelling a "
             "pending read can desynchronise the pubsub connection"
@@ -169,7 +163,7 @@ class TestHeartbeatAndPolling:
 
 class TestStaleJobStatus:
     def test_generate_clears_job_status_on_enqueue(self):
-        start = MAIN_SRC.index("@app.post(\"/sessions/{session_id}/generate\"")
+        start = MAIN_SRC.index('@app.post("/sessions/{session_id}/generate"')
         src = MAIN_SRC[start : start + 3000]
         assert 'delete(f"job_status:{session_id}")' in src, (
             "generate must clear job_status when enqueuing; a terminal status "
@@ -232,9 +226,7 @@ class TestRateLimiterWiring:
 
 
 class TestStreamHeaders:
-    @pytest.mark.parametrize(
-        "header", ["text/event-stream", "no-cache", "X-Accel-Buffering"]
-    )
+    @pytest.mark.parametrize("header", ["text/event-stream", "no-cache", "X-Accel-Buffering"])
     def test_sse_headers_present(self, header):
         src = _stream_source()
         assert header in src, f"SSE response should set {header}"

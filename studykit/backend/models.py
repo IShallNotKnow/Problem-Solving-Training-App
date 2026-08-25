@@ -22,10 +22,10 @@ class GenerationStatus(str, Enum):
 
 
 class Question(BaseModel):
-    id: UUID | None = None                      # internal db uuid, null when model-generated
-    question_id: str                            # model-generated, unique within study_set + generation_input
-    study_set_id: UUID | None = None            # which study set owns this question
-    generation_input_id: UUID | None = None     # which generation run produced this question
+    id: UUID | None = None  # internal db uuid, null when model-generated
+    question_id: str  # model-generated, unique within study_set + generation_input
+    study_set_id: UUID | None = None  # which study set owns this question
+    generation_input_id: UUID | None = None  # which generation run produced this question
     question_type: Literal["MCQ", "FRQ"]
     topic_difficulties: dict[str, int]
     prompt: str
@@ -70,17 +70,19 @@ class Question(BaseModel):
 
 class SessionQuestion(BaseModel):
     """Join table row — the scheduler's selection for one session."""
+
     id: UUID
     session_id: UUID
-    question_id: UUID                           # references questions(id)
+    question_id: UUID  # references questions(id)
     position: int
     source: Literal["generated", "resurfaced"]
     status: Literal["unseen", "active", "mastered", "due"]
-    question: Question | None = None            # populated when loaded with join
+    question: Question | None = None  # populated when loaded with join
 
 
 class QuestionScheduling(BaseModel):
     """FSRS state per user-question pair."""
+
     id: UUID | None = None
     user_id: UUID
     question_id: UUID
@@ -157,11 +159,11 @@ class GenerationResult(BaseModel):
 
 class SessionState(BaseModel):
     session_id: UUID
-    study_set_id: UUID | None = None            # which study set this session draws from
+    study_set_id: UUID | None = None  # which study set this session draws from
     label: str
-    current_position: int = 0                  # renamed from current_question_index — position in session_questions
+    current_position: int = 0  # renamed from current_question_index — position in session_questions
     topic_stats: dict[str, TopicStats] = Field(default_factory=dict)
-    questions: list[Question] = Field(default_factory=list)   # loaded via session_questions join
+    questions: list[Question] = Field(default_factory=list)  # loaded via session_questions join
     history: list[QuestionResult] = Field(default_factory=list)
     chat_history: list[dict] = Field(default_factory=list)
     created_at: datetime | None = None
@@ -240,10 +242,10 @@ class AnswerResponse(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
-    current_position: int                       # renamed from current_question_index
+    current_position: int  # renamed from current_question_index
 
 
-class StudySetSummary(BaseModel):               # new — for listing study sets
+class StudySetSummary(BaseModel):  # new — for listing study sets
     study_set_id: UUID
     label: str
     created_at: datetime | None = None
@@ -252,7 +254,7 @@ class StudySetSummary(BaseModel):               # new — for listing study sets
 
 
 class UploadResponse(BaseModel):
-    study_set_id: UUID                          # upload now returns study_set_id, not session_id
+    study_set_id: UUID  # upload now returns study_set_id, not session_id
     generation_input_id: UUID
     content: str
     raw_markdown: str
@@ -263,20 +265,20 @@ class SessionSummary(BaseModel):
     session_id: UUID
     study_set_id: UUID | None = None
     label: str
-    current_position: int = 0                  # renamed
+    current_position: int = 0  # renamed
     last_active_at: datetime | None = None
     created_at: datetime | None = None
 
 
 class QuestionDTO(BaseModel):
-    id: UUID | None = None                      # internal uuid — needed for answer_attempts FK
+    id: UUID | None = None  # internal uuid — needed for answer_attempts FK
     question_id: str
     question_type: Literal["MCQ", "FRQ"]
     prompt: str
     choices: list[str] | None = None
     topic_difficulties: dict[str, int]
-    position: int = 0                           # from session_questions.position
-    status: str = "unseen"                      # from session_questions.status
+    position: int = 0  # from session_questions.position
+    status: str = "unseen"  # from session_questions.status
 
 
 class GenerationResultDTO(BaseModel):
@@ -502,20 +504,40 @@ ANSWER_VALIDATION_TOOL = {
                                         },
                                         "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                                         "correct": {"type": "boolean"},
-                                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                                        "adaptation_signal": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+                                        "confidence": {
+                                            "type": "number",
+                                            "minimum": 0.0,
+                                            "maximum": 1.0,
+                                        },
+                                        "adaptation_signal": {
+                                            "type": "number",
+                                            "minimum": -1.0,
+                                            "maximum": 1.0,
+                                        },
                                         "misconception": {"type": ["string", "null"]},
                                         "feedback": {"type": "string"},
                                     },
                                     "required": [
-                                        "topic", "score", "correct", "confidence",
-                                        "adaptation_signal", "misconception", "feedback",
+                                        "topic",
+                                        "score",
+                                        "correct",
+                                        "confidence",
+                                        "adaptation_signal",
+                                        "misconception",
+                                        "feedback",
                                     ],
                                     "additionalProperties": False,
                                 },
                             },
                         },
-                        "required": ["question_id", "score", "correct", "feedback", "misconception", "topic_results"],
+                        "required": [
+                            "question_id",
+                            "score",
+                            "correct",
+                            "feedback",
+                            "misconception",
+                            "topic_results",
+                        ],
                         "additionalProperties": False,
                     },
                 }

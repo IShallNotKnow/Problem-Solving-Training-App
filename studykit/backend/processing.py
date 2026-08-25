@@ -178,7 +178,9 @@ def log_invalid_prompt(exc: BadRequestError, call_site: str, messages: list) -> 
         blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
         for i, b in enumerate(blocks):
             if b.get("type") == "image_url":
-                logger.error(f"  [{role}][{i}] image block (~{len(b['image_url']['url'])} b64 chars)")
+                logger.error(
+                    f"  [{role}][{i}] image block (~{len(b['image_url']['url'])} b64 chars)"
+                )
                 continue
             text = b.get("text") or ""
             excerpt = text[:300].replace("\n", " ")
@@ -205,25 +207,36 @@ def _parse_text(message) -> str:
 def _normalize_topic_key(topic: str) -> str:
     # replace control characters — DEL is the known apostrophe mangling,
     # map the whole C0/C1 range defensively
-    topic = re.sub(r'[\x00-\x1f\x7f\x80-\x9f]', lambda m: {
-        '\x7f': "'",   # DEL → apostrophe
-        '\x91': "'",   # Windows-1252 left single quote
-        '\x92': "'",   # Windows-1252 right single quote
-        '\x93': '"',   # Windows-1252 left double quote
-        '\x94': '"',   # Windows-1252 right double quote
-        '\x96': '-',   # Windows-1252 en dash
-        '\x97': '-',   # Windows-1252 em dash
-    }.get(m.group(), ''), topic)
+    topic = re.sub(
+        r"[\x00-\x1f\x7f\x80-\x9f]",
+        lambda m: {
+            "\x7f": "'",  # DEL → apostrophe
+            "\x91": "'",  # Windows-1252 left single quote
+            "\x92": "'",  # Windows-1252 right single quote
+            "\x93": '"',  # Windows-1252 left double quote
+            "\x94": '"',  # Windows-1252 right double quote
+            "\x96": "-",  # Windows-1252 en dash
+            "\x97": "-",  # Windows-1252 em dash
+        }.get(m.group(), ""),
+        topic,
+    )
 
     # NFKC handles ligatures, fullwidth variants, etc.
-    topic = unicodedata.normalize('NFKC', topic)
+    topic = unicodedata.normalize("NFKC", topic)
 
     # Unicode smart quotes — NFKC doesn't collapse these to ASCII
-    topic = topic.translate(str.maketrans({
-        '\u2018': "'", '\u2019': "'",
-        '\u201c': '"', '\u201d': '"',
-        '\u2013': '-', '\u2014': '-',
-    }))
+    topic = topic.translate(
+        str.maketrans(
+            {
+                "\u2018": "'",
+                "\u2019": "'",
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2013": "-",
+                "\u2014": "-",
+            }
+        )
+    )
 
     return topic.strip()
 
@@ -781,11 +794,11 @@ respond.
             )
 
             current_user_content = (
-                base_user_content.copy()      # images still matter
+                base_user_content.copy()  # images still matter
                 if not approved_questions
                 else retry_user_content.copy()  # gap-fill: descriptions suffice
             )
-            
+
             if feedback_history:
                 feedback_str = "\n".join(f"- {qid}: {fb}" for qid, fb in feedback_history.items())
                 current_user_content.append(
@@ -834,9 +847,7 @@ respond.
                     # Content-level rejection: images are the most common trigger, so
                     # retry once on text alone before giving up on the whole job.
                     if any(b.get("type") == "image_url" for b in current_user_content):
-                        logger.warning(
-                            "[generator] retrying without images after invalid_prompt"
-                        )
+                        logger.warning("[generator] retrying without images after invalid_prompt")
                         base_user_content = retry_user_content
                         attempts += 1
                         continue
@@ -986,7 +997,7 @@ respond.
             feedback_history = this_round_feedback
             for q in newly_approved:
                 yield q
-            
+
             attempts += 1
             logger.info(
                 f"[generator] end of attempt {attempts}: {current_mcq} MCQ + {current_frq} FRQ approved so far"
@@ -1155,8 +1166,8 @@ class StudyChatAssistant:
             f"[chat] responding, current_question={session_context.current_question.question_id if session_context.current_question else None}, history_turns={len(session_context.chat_history)}"
         )
         question_context = (
-            json.dumps(session_context.current_question.model_dump(mode='json'), indent=2)
-            if  session_context.current_question
+            json.dumps(session_context.current_question.model_dump(mode="json"), indent=2)
+            if session_context.current_question
             else "No active question"
         )
         system_prompt = f"""You are a study assistant helping a student work through practice questions.

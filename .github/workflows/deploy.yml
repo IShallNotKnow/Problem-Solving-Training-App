@@ -21,6 +21,7 @@ jobs:
         with:
           node-version: 24
           cache: 'npm'
+          cache-dependency-path: './studykit/frontend/package-lock.json'
 
       - name: Install Vercel CLI
         run: npm install --global vercel@latest

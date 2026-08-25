@@ -89,14 +89,20 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             raise ValueError("No upload context found and no markdown provided")
 
         content = upload_context["content"] if upload_context else job["raw_markdown"]
-        generation_input_id = UUID(upload_context["generation_input_id"]) if upload_context else None
+        generation_input_id = (
+            UUID(upload_context["generation_input_id"]) if upload_context else None
+        )
 
         await valkey.set(f"job_status:{session_id}", "in_progress", ex=600)
 
         result = None
         try:
             async for item in question_generator.generate_questions(
-                content, raw_images, storage_manager, state.study_set_id, profile,
+                content,
+                raw_images,
+                storage_manager,
+                state.study_set_id,
+                profile,
             ):
                 logger.info(
                     "[worker] generator yielded type=%s value=%r",
@@ -105,11 +111,9 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
                 )
                 if isinstance(item, Question):
                     channel = f"session:{session_id}:questions"
-                    payload = (
-                        QuestionDTO
-                        .model_validate(item, from_attributes=True)
-                        .model_dump_json()
-                    )
+                    payload = QuestionDTO.model_validate(
+                        item, from_attributes=True
+                    ).model_dump_json()
 
                     logger.info(
                         "[worker] PUBLISHING question mid_generation=%s channel=%s",
@@ -136,11 +140,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
             raise ValueError("No questions could be generated from this content")
 
         # Derive topics from generated questions for resurfacing relevance
-        new_topics = {
-            topic
-            for q in result.questions
-            for topic in q.topic_difficulties.keys()
-        }
+        new_topics = {topic for q in result.questions for topic in q.topic_difficulties.keys()}
 
         resurfaced_questions = await session_store.select_questions_for_resurfacing(
             study_set_id=state.study_set_id,

@@ -71,7 +71,9 @@ class StorageManager:
                 .execute()
             )
             if not study_set.data:
-                logger.warning(f"[storage] study set {study_set_id} not found when downloading image")
+                logger.warning(
+                    f"[storage] study set {study_set_id} not found when downloading image"
+                )
                 return None
             data = await self.db.storage.from_("generation-images").download(storage_path)
             logger.debug(f"[storage] downloaded image {storage_path} ({len(data)} bytes)")

@@ -56,7 +56,7 @@ $$;
 CREATE OR REPLACE FUNCTION submit_answer(
     p_session_id    UUID,
     p_user_id       UUID,
-    p_question_id   UUID,       -- internal questions.id UUID
+    p_question_id   UUID,
     p_response      TEXT,
     p_score         FLOAT,
     p_correct       BOOLEAN,
@@ -64,7 +64,10 @@ CREATE OR REPLACE FUNCTION submit_answer(
     p_misconception TEXT,
     p_next_position INT,
     p_topic_stats   JSONB,
-    p_elo_history   JSONB
+    p_elo_history   JSONB,
+    p_stability     FLOAT,
+    p_difficulty    FLOAT,
+    p_due_at        TIMESTAMPTZ
 )
 RETURNS void
 LANGUAGE plpgsql
@@ -72,7 +75,6 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-    -- Ownership check: user must own session and match auth.uid()
     IF NOT EXISTS (
         SELECT 1 FROM sessions
         WHERE session_id = p_session_id
@@ -102,31 +104,28 @@ BEGIN
         h->>'reason'
     FROM jsonb_array_elements(p_elo_history) AS h;
 
-    -- Advance session position
     UPDATE sessions
     SET current_position = p_next_position,
         last_active_at   = now()
     WHERE session_id = p_session_id;
 
-    -- Mark question as active in this session
     UPDATE session_questions
     SET status = 'active'
     WHERE session_id  = p_session_id
       AND question_id = p_question_id;
 
-    -- Update scheduling state on the question itself
-    UPDATE question_scheduling
-    SET last_attempted_at = now(),
-        times_seen        = times_seen + 1
-    WHERE question_id = p_question_id
-      AND user_id     = p_user_id;
+    -- Single upsert handles both first attempt and subsequent updates
+    INSERT INTO question_scheduling
+        (user_id, question_id, stability, difficulty, due_at, times_seen, last_attempted_at)
+    VALUES
+        (p_user_id, p_question_id, p_stability, p_difficulty, p_due_at, 1, now())
+    ON CONFLICT (user_id, question_id) DO UPDATE
+        SET stability         = EXCLUDED.stability,
+            difficulty        = EXCLUDED.difficulty,
+            due_at            = EXCLUDED.due_at,
+            times_seen        = question_scheduling.times_seen + 1,
+            last_attempted_at = now();
 
-    -- Insert scheduling row if first time seeing this question
-    INSERT INTO question_scheduling (user_id, question_id, times_seen, last_attempted_at)
-    VALUES (p_user_id, p_question_id, 1, now())
-    ON CONFLICT (user_id, question_id) DO NOTHING;
-
-    -- topic_stats now user-scoped, not session-scoped
     INSERT INTO topic_stats (user_id, topic, elo, p_known, attempts)
     SELECT
         p_user_id,
@@ -141,7 +140,6 @@ BEGIN
             attempts = EXCLUDED.attempts;
 END;
 $$;
-
 
 -- Replaces replace_questions_and_finalize — questions now live in study sets,
 -- session_questions is the join table, finalization links session to study set

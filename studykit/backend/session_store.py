@@ -1,7 +1,6 @@
 import asyncio
 import logging
-import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -11,9 +10,18 @@ from models import (
     GenerationStatus,
     Question,
     QuestionResult,
+    QuestionScheduling,
     SessionState,
     TopicStats,
     TopicUpdate,
+)
+from scheduler import (
+    fsrs_update,
+    initial_difficulty,
+    initial_stability,
+    next_interval,
+    retrievability,
+    score_to_fsrs_rating,
 )
 from supabase import AsyncClient
 
@@ -70,10 +78,7 @@ class SessionStore:
                     .eq("session_id", str(session_id))
                     .order("position")
                     .execute(),
-                    self.db.table("topic_stats")
-                    .select("*")
-                    .eq("user_id", str(user_id))
-                    .execute(),
+                    self.db.table("topic_stats").select("*").eq("user_id", str(user_id)).execute(),
                 )
                 questions = []
                 for row in questions_res.data:
@@ -82,10 +87,7 @@ class SessionStore:
             else:
                 questions = []
                 topic_stats_res = await (
-                    self.db.table("topic_stats")
-                    .select("*")
-                    .eq("user_id", str(user_id))
-                    .execute()
+                    self.db.table("topic_stats").select("*").eq("user_id", str(user_id)).execute()
                 )
         except Exception as e:
             raise DatabaseError(f"Failed to fetch session data for {session_id}") from e
@@ -120,11 +122,12 @@ class SessionStore:
     async def submit_answer_atomic(
         self,
         session_id: UUID,
-        question_id: UUID,          # internal UUID, not model-generated text
-        user_id: UUID,              # needed for user-scoped topic_stats upsert
+        question_id: UUID,  # internal UUID, not model-generated text
+        user_id: UUID,  # needed for user-scoped topic_stats upsert
         response_str: str,
         question_result: QuestionResult,
-        next_position: int,         # renamed from next_index
+        scheduling: QuestionScheduling,
+        next_position: int,  # renamed from next_index
         updates: list[TopicUpdate],
         topic_stats: dict[str, TopicStats],
     ) -> None:
@@ -132,6 +135,26 @@ class SessionStore:
             f"[session] submitting answer atomically for question {question_id}, "
             f"next_position={next_position}, score={question_result.score}"
         )
+
+        rating = score_to_fsrs_rating(question_result.score)
+
+        if scheduling is None or scheduling.times_seen == 0:
+            new_stability = initial_stability(rating)
+            new_difficulty = initial_difficulty(rating)
+            interval = next_interval(new_stability)
+        else:
+            days_elapsed = (
+                datetime.now(timezone.utc) - scheduling.last_attempted_at
+            ).total_seconds() / 86400
+            new_stability, new_difficulty, interval = fsrs_update(
+                scheduling.stability,
+                scheduling.difficulty,
+                days_elapsed,
+                rating,
+            )
+
+        due_at = datetime.now(timezone.utc) + timedelta(days=interval)
+
         await self.db.rpc(
             "submit_answer",
             {
@@ -146,6 +169,9 @@ class SessionStore:
                 "p_next_position": next_position,
                 "p_topic_stats": [stats.model_dump() for stats in topic_stats.values()],
                 "p_elo_history": [u.model_dump() for u in updates],
+                "p_stability": new_stability,
+                "p_difficulty": new_difficulty,
+                "p_due_at": due_at,
             },
         ).execute()
         logger.info(f"[session] answer submitted successfully for question {question_id}")
@@ -170,7 +196,9 @@ class SessionStore:
             raise HTTPException(status_code=403, detail="Forbidden")
 
     async def verify_study_set_ownership(self, study_set_id: UUID, user_id: UUID) -> None:
-        logger.debug(f"[session] verifying ownership of study set {study_set_id} for user {user_id}")
+        logger.debug(
+            f"[session] verifying ownership of study set {study_set_id} for user {user_id}"
+        )
         res = await (
             self.db.table("study_sets")
             .select("user_id")
@@ -207,12 +235,14 @@ class SessionStore:
         logger.info(f"[session] creating session {session_id} for user {user_id}, label='{label}'")
         res = (
             await self.db.table("sessions")
-            .insert({
-                "session_id": str(session_id),
-                "label": label,
-                "user_id": str(user_id),
-                # study_set_id intentionally null until generation completes
-            })
+            .insert(
+                {
+                    "session_id": str(session_id),
+                    "label": label,
+                    "user_id": str(user_id),
+                    # study_set_id intentionally null until generation completes
+                }
+            )
             .select("*")
             .execute()
         )
@@ -228,10 +258,12 @@ class SessionStore:
         logger.debug(f"[session] saving session {session_id}, position={state.current_position}")
         await (
             self.db.table("sessions")
-            .update({
-                "current_position": state.current_position,
-                "last_active_at": datetime.now(timezone.utc).isoformat(),
-            })
+            .update(
+                {
+                    "current_position": state.current_position,
+                    "last_active_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             .eq("session_id", str(session_id))
             .execute()
         )
@@ -288,13 +320,15 @@ class SessionStore:
         )
         res = await (
             self.db.table("generation_inputs")
-            .insert({
-                "study_set_id": str(study_set_id),
-                "content": content,
-                "raw_markdown": raw_markdown,
-                "pdf_path": pdf_path,
-                "questions_generated": False,
-            })
+            .insert(
+                {
+                    "study_set_id": str(study_set_id),
+                    "content": content,
+                    "raw_markdown": raw_markdown,
+                    "pdf_path": pdf_path,
+                    "questions_generated": False,
+                }
+            )
             .select("generation_input_id")
             .execute()
         )
@@ -302,16 +336,18 @@ class SessionStore:
         if stored_images:
             await (
                 self.db.table("generation_images")
-                .insert([
-                    {
-                        "generation_input_id": str(generation_input_id),
-                        "storage_path": img["storage_path"],
-                        "filename": img["filename"],
-                        "content_type": img["content_type"],
-                        "description": img.get("description"),
-                    }
-                    for img in stored_images
-                ])
+                .insert(
+                    [
+                        {
+                            "generation_input_id": str(generation_input_id),
+                            "storage_path": img["storage_path"],
+                            "filename": img["filename"],
+                            "content_type": img["content_type"],
+                            "description": img.get("description"),
+                        }
+                        for img in stored_images
+                    ]
+                )
                 .execute()
             )
         logger.info(f"[session] upload context stored, generation_input_id={generation_input_id}")
@@ -339,20 +375,22 @@ class SessionStore:
     ) -> None:
         await (
             self.db.table("elo_history")
-            .insert([
-                {
-                    "session_id": str(session_id),
-                    "question_id": str(question_id),
-                    "topic": update.topic,
-                    "previous_elo": update.previous_elo,
-                    "new_elo": update.new_elo,
-                    "elo_delta": update.elo_delta,
-                    "previous_p_known": update.previous_p_known,
-                    "new_p_known": update.new_p_known,
-                    "reason": update.reason,
-                }
-                for update in updates
-            ])
+            .insert(
+                [
+                    {
+                        "session_id": str(session_id),
+                        "question_id": str(question_id),
+                        "topic": update.topic,
+                        "previous_elo": update.previous_elo,
+                        "new_elo": update.new_elo,
+                        "elo_delta": update.elo_delta,
+                        "previous_p_known": update.previous_p_known,
+                        "new_p_known": update.new_p_known,
+                        "reason": update.reason,
+                    }
+                    for update in updates
+                ]
+            )
             .execute()
         )
 
@@ -370,7 +408,9 @@ class SessionStore:
 
     async def get_relevant_profile(self, study_set_id: UUID, state: SessionState) -> dict | None:
         if not state.topic_stats:
-            logger.info(f"[session] no topic stats yet for study set {study_set_id}, skipping profile")
+            logger.info(
+                f"[session] no topic stats yet for study set {study_set_id}, skipping profile"
+            )
             return None
         prev_generations = await (
             self.db.table("generation_topics")
@@ -385,7 +425,9 @@ class SessionStore:
             for bucket, topics in profile.items()
         }
         if not any(filtered.values()):
-            logger.info(f"[session] topic profile empty after filtering for study set {study_set_id}")
+            logger.info(
+                f"[session] topic profile empty after filtering for study set {study_set_id}"
+            )
             return None
         logger.info(f"[session] topic profile for study set {study_set_id}: {filtered}")
         return filtered
@@ -445,7 +487,7 @@ class SessionStore:
     async def populate_session_questions(
         self,
         session_id: UUID,
-        question_uuids: list[UUID],         # ordered list — position derived from index
+        question_uuids: list[UUID],  # ordered list — position derived from index
         resurfaced_ids: set[UUID] | None = None,
     ) -> None:
         """Populate session_questions for this session from the given question UUIDs."""
@@ -501,18 +543,20 @@ class SessionStore:
 
         ops = [
             self.db.table("sessions")
-            .update({
-                "study_set_id": str(study_set_id),
-                "current_position": 0,
-                "last_active_at": datetime.now(timezone.utc).isoformat(),
-            })
+            .update(
+                {
+                    "study_set_id": str(study_set_id),
+                    "current_position": 0,
+                    "last_active_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             .eq("session_id", str(session_id))
             .execute()
         ]
 
         if generation_input_id is not None:
             input_status = "completed" if status == GenerationStatus.GENERATED else "failed"
-            
+
             ops.append(
                 self.db.table("generation_inputs")
                 .update({"questions_generated": True, "status": input_status})
@@ -522,10 +566,12 @@ class SessionStore:
             if topics_covered:
                 ops.append(
                     self.db.table("generation_topics")
-                    .insert([
-                        {"generation_input_id": str(generation_input_id), "topic": topic}
-                        for topic in topics_covered
-                    ])
+                    .insert(
+                        [
+                            {"generation_input_id": str(generation_input_id), "topic": topic}
+                            for topic in topics_covered
+                        ]
+                    )
                     .execute()
                 )
 
@@ -565,7 +611,7 @@ class SessionStore:
 
     async def select_questions_for_resurfacing(
         self,
-        study_set_id: UUID,             # resurfacing draws from study set pool, not session
+        study_set_id: UUID,  # resurfacing draws from study set pool, not session
         new_topics: set[str],
         state: SessionState,
         target: int,
@@ -578,35 +624,48 @@ class SessionStore:
             {"p_study_set_id": str(study_set_id)},
         ).execute()
 
-        def retrievability(p_known: float, days_since_attempt: float) -> float:
-            stability = max(1.0, p_known * 30)
-            return math.exp(-days_since_attempt / stability)
-
         candidates = []
         for row in res.data:
             if not row.get("last_attempted_at"):
                 continue
             days_elapsed = (now - datetime.fromisoformat(row["last_attempted_at"])).days
-            p_known = state.topic_stats.get(
-                row["topic"], TopicStats(topic=row["topic"])
-            ).p_known
+            p_known = state.topic_stats.get(row["topic"], TopicStats(topic=row["topic"])).p_known
             r = retrievability(p_known, days_elapsed)
 
             if r >= 0.9:
                 continue
 
             topic_overlap = len(set(row["topics"]) & new_topics)
-            candidates.append({
-                "question": Question(**row),
-                "retrievability": r,
-                "topic_overlap": topic_overlap,
-                "p_known": p_known,
-            })
+            candidates.append(
+                {
+                    "question": Question(**row),
+                    "retrievability": r,
+                    "topic_overlap": topic_overlap,
+                    "p_known": p_known,
+                }
+            )
 
-        candidates.sort(key=lambda c: (
-            -c["topic_overlap"],
-            c["retrievability"],
-            c["p_known"],
-        ))
+        candidates.sort(
+            key=lambda c: (
+                -c["topic_overlap"],
+                c["retrievability"],
+                c["p_known"],
+            )
+        )
 
         return [c["question"] for c in candidates[:target]]
+
+    async def get_question_scheduling(
+        self, user_id: UUID, question_id: UUID
+    ) -> QuestionScheduling | None:
+        res = await (
+            self.db.table("question_scheduling")
+            .select("*")
+            .eq("user_id", str(user_id))
+            .eq("question_id", str(question_id))
+            .maybe_single()
+            .execute()
+        )
+        if not res.data:
+            return None
+        return QuestionScheduling(**res.data)

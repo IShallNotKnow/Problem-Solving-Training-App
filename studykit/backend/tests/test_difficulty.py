@@ -60,9 +60,7 @@ def test_bkt_update():
         question_difficulty=1500,
     )
     p_clamped_high = dc.compute_bkt_update(stats_high, evidence_high)
-    assert p_clamped_high <= 0.95, (
-        f"p_known should not exceed 0.95: got {p_clamped_high}"
-    )
+    assert p_clamped_high <= 0.95, f"p_known should not exceed 0.95: got {p_clamped_high}"
 
     # p_known should never fall below 0.05 (lower bound)
     stats_low = TopicStats(topic="calculus", elo=1500, p_known=0.06, attempts=0)
@@ -80,9 +78,7 @@ def test_bkt_update():
         question_difficulty=1500,
     )
     p_clamped_low = dc.compute_bkt_update(stats_low, evidence_low)
-    assert p_clamped_low >= 0.05, (
-        f"p_known should not fall below 0.05: got {p_clamped_low}"
-    )
+    assert p_clamped_low >= 0.05, f"p_known should not fall below 0.05: got {p_clamped_low}"
 
     # Forgetting: repeated incorrect answers on a high p_known student
     # should meaningfully reduce p_known, not plateau near 1
@@ -105,9 +101,7 @@ def test_bkt_update():
         p = dc.compute_bkt_update(
             TopicStats(topic="calculus", elo=1500, p_known=p, attempts=10), ev
         )
-    assert p < 0.8, (
-        f"Repeated incorrect answers should reduce p_known below initial 0.8, got {p}"
-    )
+    assert p < 0.8, f"Repeated incorrect answers should reduce p_known below initial 0.8, got {p}"
 
 
 def test_elo_update():
@@ -223,7 +217,7 @@ def test_elo_update():
             feedback="Correct!",
         ),
         stats,
-        question_difficulty=800,   # much easier than student's 1500
+        question_difficulty=800,  # much easier than student's 1500
     )
     ev_hard = dc.compute_evidence(
         TopicResult(

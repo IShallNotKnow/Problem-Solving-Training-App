@@ -147,7 +147,6 @@ create table public.question_scheduling (
   due_at        timestamp with time zone null,
   stability     real not null default 0.0,
   difficulty    real not null default 0.3,
-  retrievability real not null default 1.0,
   times_seen    integer not null default 0,
   last_attempted_at timestamp with time zone null,
   constraint question_scheduling_pkey primary key (id),

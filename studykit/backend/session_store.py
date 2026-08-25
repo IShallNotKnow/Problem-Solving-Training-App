@@ -666,6 +666,6 @@ class SessionStore:
             .maybe_single()
             .execute()
         )
-        if not res.data:
+        if not res or not res.data:
             return None
         return QuestionScheduling(**res.data)

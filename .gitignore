@@ -33,3 +33,5 @@ dist-ssr
 *.sw?
 .vscode
 studykit.egg-info
+.vercel
+.env*

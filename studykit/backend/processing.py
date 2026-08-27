@@ -626,10 +626,27 @@ class QuestionGenerator:
         storage_manager: StorageManager,
         study_set_id: UUID,
         topic_profile: dict | None = None,
+        recent_misconceptions: dict | None = None,
     ) -> AsyncGenerator[Question | GenerationResult, None]:
         logger.info(
             f"[generator] starting question generation for study set {study_set_id}, {len(raw_images)} images available, profile={topic_profile is not None}"
         )
+
+        misconceptions_instruction = ""
+
+        if recent_misconceptions:
+            misconception_parts = []
+            for topic, misconceptions in recent_misconceptions.items():
+                joined = "; ".join(misconceptions)
+                misconception_parts.append(f"- {topic}: {joined}")
+            misconception_str = "\n".join(misconception_parts)
+            misconceptions_instruction = (
+                f"The student has recently demonstrated the following misconceptions per topic:\n"
+                f"{misconception_str}\n"
+                f"Where relevant, design questions and distractors that directly confront "
+                f"these misconceptions to help the student identify and correct them."
+            )
+
         balance_instruction = ""
         if topic_profile:
             strong = topic_profile.get("strong", [])
@@ -641,21 +658,25 @@ class QuestionGenerator:
             if weak:
                 weak_with_ranges = [
                     f"{t} (target ELO {max(300, topic_elos[t] - 100)}–{min(3000, topic_elos[t] + 300)})"
-                    if t in topic_elos else t
+                    if t in topic_elos
+                    else t
                     for t in weak
                 ]
                 parts.append(f"Prioritize questions on weak topics: {', '.join(weak_with_ranges)}.")
             if strong:
                 strong_with_ranges = [
                     f"{t} (target ELO {max(300, topic_elos[t] - 200)}–{min(3000, topic_elos[t] + 200)})"
-                    if t in topic_elos else t
+                    if t in topic_elos
+                    else t
                     for t in strong
                 ]
                 parts.append(
                     f"Incorporate 4-6 questions with strong topics ({', '.join(strong_with_ranges)}) to maintain retention."
                 )
             if unseen:
-                parts.append(f"Cover unseen topics at least once each: {', '.join(unseen)} with varying difficulties (target ELO 500-1500).")
+                parts.append(
+                    f"Cover unseen topics at least once each: {', '.join(unseen)} with varying difficulties (target ELO 500-1500)."
+                )
             balance_instruction = "\n\n" + " ".join(parts) if parts else ""
             logger.info(f"[generator] topic profile: strong={strong}, weak={weak}, unseen={unseen}")
 
@@ -707,6 +728,7 @@ situations presented in the lecture notes. Use the notes as the foundation for n
 not as the questions themselves. Avoid asking multiple questions that test the same fact or concept 
 in only slightly different ways. Each question should assess a meaningfully different skill, concept, or application.
 MCQ distractors must be plausible and reflect real misconceptions, with exactly one defensible correct option.
+{misconceptions_instruction}
 {balance_instruction}
 
 Generate questions across these archetypes where the material supports them:

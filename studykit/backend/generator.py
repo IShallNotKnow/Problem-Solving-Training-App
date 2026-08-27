@@ -85,6 +85,8 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         raw_images = await storage_manager.list_images(state.study_set_id)
         upload_context = await session_store.get_upload_context(state.study_set_id)
 
+        recent_misconceptions = await session_store.get_recent_misconceptions(session_id=ss_id)
+
         if upload_context is None and not job.get("raw_markdown"):
             raise ValueError("No upload context found and no markdown provided")
 
@@ -103,6 +105,7 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
                 storage_manager,
                 state.study_set_id,
                 profile,
+                recent_misconceptions=recent_misconceptions,
             ):
                 logger.info(
                     "[worker] generator yielded type=%s value=%r",

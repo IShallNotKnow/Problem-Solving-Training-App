@@ -65,6 +65,7 @@ CREATE OR REPLACE FUNCTION submit_answer(
     p_next_position INT,
     p_topic_stats   JSONB,
     p_elo_history   JSONB,
+    p_topic_misconceptions   JSONB, 
     p_stability     FLOAT,
     p_difficulty    FLOAT,
     p_due_at        TIMESTAMPTZ
@@ -85,9 +86,9 @@ BEGIN
     END IF;
 
     INSERT INTO answer_attempts
-        (session_id, question_id, response, score, correct, feedback, misconception)
+        (session_id, question_id, response, score, correct, feedback, misconception, topic_misconceptions)
     VALUES
-        (p_session_id, p_question_id, p_response, p_score, p_correct, p_feedback, p_misconception);
+        (p_session_id, p_question_id, p_response, p_score, p_correct, p_feedback, p_misconception, p_topic_misconceptions);
 
     INSERT INTO elo_history
         (session_id, question_id, topic, previous_elo, new_elo, elo_delta,

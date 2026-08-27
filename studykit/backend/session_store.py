@@ -153,6 +153,12 @@ class SessionStore:
                 rating,
             )
 
+        topic_misconceptions = {
+            result.topic: result.misconception
+            for result in question_result.topic_results
+            if result.misconception is not None
+        } or None
+
         due_at = datetime.now(timezone.utc) + timedelta(days=interval)
 
         await self.db.rpc(
@@ -166,6 +172,7 @@ class SessionStore:
                 "p_correct": question_result.correct,
                 "p_feedback": question_result.feedback,
                 "p_misconception": question_result.misconception,
+                "p_topic_misconceptions": topic_misconceptions,
                 "p_next_position": next_position,
                 "p_topic_stats": [stats.model_dump() for stats in topic_stats.values()],
                 "p_elo_history": [u.model_dump() for u in updates],
@@ -430,9 +437,9 @@ class SessionStore:
             )
             return None
 
-        filtered["topic_elos"] = state.get_topic_elo([
-            t for topics in filtered.values() for t in topics
-        ])
+        filtered["topic_elos"] = state.get_topic_elo(
+            [t for topics in filtered.values() for t in topics]
+        )
         logger.info(f"[session] topic profile for study set {study_set_id}: {filtered}")
         return filtered
 
@@ -449,6 +456,28 @@ class SessionStore:
             .execute()
         )
         return [row["new_elo"] for row in reversed(res.data)]
+
+    async def get_recent_misconceptions(
+        self,
+        session_id: UUID,
+        limit: int = 20,
+    ) -> list[dict] | None:
+        res = await (
+            self.db.table("answer_attempts")
+            .select("topic_misconceptions, last_answered_at")
+            .eq("session_id", str(session_id))
+            .order("last_answered_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        misconceptions: dict[str, list[str]] = {}
+        for row in res.data:
+            if row.get("topic_misconceptions"):
+                for topic, misconception in row["topic_misconceptions"].items():
+                    misconceptions.setdefault(topic, []).append(misconception)
+
+        return misconceptions if misconceptions else None
 
     async def upsert_questions_to_study_set(
         self,

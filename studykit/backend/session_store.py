@@ -464,9 +464,9 @@ class SessionStore:
     ) -> list[dict] | None:
         res = await (
             self.db.table("answer_attempts")
-            .select("topic_misconceptions, last_answered_at")
+            .select("topic_misconceptions, answered_at")
             .eq("session_id", str(session_id))
-            .order("last_answered_at", desc=True)
+            .order("answered_at", desc=True)
             .limit(limit)
             .execute()
         )

@@ -34,6 +34,36 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
+      - name: Verify Vercel secrets exist
+        run: |
+          missing=0
+
+          if [ -z "$VERCEL_ORG_ID" ]; then
+            echo "VERCEL_ORG_ID is missing"
+            missing=1
+          else
+            echo "VERCEL_ORG_ID is present"
+          fi
+
+          if [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "VERCEL_PROJECT_ID is missing"
+            missing=1
+          else
+            echo "VERCEL_PROJECT_ID is present"
+          fi
+
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN is missing"
+            missing=1
+          else
+            echo "VERCEL_TOKEN is present"
+          fi
+
+          if [ "$missing" -ne 0 ]; then
+            echo "One or more Vercel secrets are missing."
+            exit 1
+          fi
+
       - name: Verify Vercel authentication
         run: vercel whoami --token="$VERCEL_TOKEN"
 

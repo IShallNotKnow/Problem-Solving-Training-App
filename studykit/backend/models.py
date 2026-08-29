@@ -339,7 +339,9 @@ QUESTION_GENERATION_TOOL = {
                             },
                             "prompt": {
                                 "type": "string",
-                                "description": "The question text shown to the student.",
+                                "description": "The question text shown to the student. "
+                                "Use GitHub-flavoured markdown. Bold key terms, "
+                                "use code blocks for identifiers, LaTeX for equations.",
                             },
                             "choices": {
                                 "type": ["array", "null"],
@@ -347,8 +349,9 @@ QUESTION_GENERATION_TOOL = {
                                 "minItems": 3,
                                 "maxItems": 5,
                                 "description": (
-                                    "MCQ only. 3-5 answer options, plain text, "
-                                    "no leading letters like 'A)'. Null for FRQ."
+                                    "MCQ only. 3-5 answer options, using GitHub-flavoured markdown. "
+                                    "Bold key terms, use code blocks for identifiers, LaTeX for equations. "
+                                    "No leading letters like 'A)'. Null for FRQ."
                                 ),
                             },
                             "correct_choice_index": {
@@ -363,7 +366,8 @@ QUESTION_GENERATION_TOOL = {
                                 "description": (
                                     "ALWAYS required — never omit this field. "
                                     "MCQ: copy the exact text of the correct choice from `choices` verbatim. "
-                                    "FRQ: write a complete model answer that fully satisfies all rubric_points."
+                                    "FRQ: write a complete model answer that fully satisfies all rubric_points. "
+                                    "Use GitHub-flavoured markdown. Bold key terms, use code blocks for identifiers, LaTeX for equations."
                                 ),
                             },
                             "rubric_points": {
@@ -381,6 +385,8 @@ QUESTION_GENERATION_TOOL = {
                                     "grading explaining why the correct answer is right. "
                                     "For MCQ also explain why the distractors are wrong. "
                                     "For FRQ summarise the key insight a correct answer must show."
+                                    "Detailed response using GitHub-flavoured markdown. "
+                                    "Bold key terms, use code blocks for identifiers, LaTeX for equations."
                                 ),
                             },
                         },
@@ -478,7 +484,9 @@ ANSWER_VALIDATION_TOOL = {
                             },
                             "feedback": {
                                 "type": "string",
-                                "description": "1-3 sentences specific to what the student wrote.",
+                                "description": "1-3 sentences specific to what the student wrote. "
+                                "Detailed feedback using GitHub-flavoured markdown. Bold key terms, "
+                                "use code blocks for identifiers, LaTeX for equations.",
                             },
                             "misconception": {
                                 "type": ["string", "null"],

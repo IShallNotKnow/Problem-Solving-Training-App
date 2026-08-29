@@ -667,7 +667,12 @@ export default function StudyPage() {
                                             {msg.score >= 0.85 ? '✓ Correct' : msg.score >= 0.5 ? '~ Partial' : '✗ Incorrect'}
                                             <span className="sp-score-pct">{Math.round(msg.score * 100)}%</span>
                                         </div>
-                                        <p className="sp-feedback-text">{msg.content}</p>
+                                        <MarkdownMessage
+                                            className="sp-feedback-text"
+                                            isDark={theme === 'dark'}
+                                        >
+                                            {String(msg.content)}
+                                        </MarkdownMessage>
                                         {msg.misconception && (
                                             <p className="sp-misconception">
                                                 Common mistake: {msg.misconception}
@@ -677,7 +682,9 @@ export default function StudyPage() {
                                 ) : msg.role === 'assistant' ? (
                                     <MarkdownMessage isDark={theme === 'dark'}>{String(msg.content)}</MarkdownMessage>
                                 ) : (
-                                    <span>{msg.content}</span>
+                                    <MarkdownMessage isDark={theme === 'dark'}>
+                                        {String(msg.content)}
+                                    </MarkdownMessage>
                                 )}
                             </div>
                         </div>
@@ -692,7 +699,12 @@ export default function StudyPage() {
                                 </span>
                                 <span className="sp-question-type-badge">{currentQuestion.question_type}</span>
                             </div>
-                            <p className="sp-question-prompt">{currentQuestion.prompt}</p>
+                            <MarkdownMessage
+                                className="sp-question-prompt"
+                                isDark={theme === 'dark'}
+                            >
+                                {String(currentQuestion.prompt)}
+                            </MarkdownMessage>
                             {currentQuestion.question_type === 'MCQ' && currentQuestion.choices && (
                                 <div className="sp-choices">
                                     {currentQuestion.choices.map((choice, ci) => (
@@ -707,7 +719,12 @@ export default function StudyPage() {
                                                 {String.fromCharCode(65 + ci)}
                                             </span>
 
-                                            <span>{choice}</span>
+                                            <MarkdownMessage
+                                                className="sp-choice-text"
+                                                isDark={theme === 'dark'}
+                                            >
+                                                {String(choice)}
+                                            </MarkdownMessage>
                                         </button>
                                     ))}
                                 </div>

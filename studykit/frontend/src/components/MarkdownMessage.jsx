@@ -57,14 +57,14 @@ function Mermaid({ chart, isDark }) {
     return <div className="md-mermaid" ref={ref} />;
 }
 
-export default function MarkdownMessage({ children, isDark = false }) {
+export default function MarkdownMessage({ children, isDark = false, className = '' }) {
     const raw = typeof children === 'string' ? children : String(children ?? '');
     const text = raw
         .replace(/\\\(/g, '$').replace(/\\\)/g, '$')
         .replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
 
     return (
-        <div className="md-body">
+        <div className={`md-body ${className}`}>
             <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}

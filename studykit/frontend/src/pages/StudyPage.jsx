@@ -139,6 +139,19 @@ export default function StudyPage() {
                 });
                 return;
             }
+        } else if (currentInput) {
+            try {
+                const formData = new FormData();
+                formData.append('raw_markdown', currentInput);
+                await apiUpload(`/sessions/${sessionId}/upload`, formData);
+            } catch (err) {
+                setLoading(false);
+                setRetryError({
+                    message: 'Upload failed — please try again.',
+                    onRetry: () => { setRetryError(null); handleUploadAndGenerate(); },
+                });
+                return;
+            }
         }
 
         // captured in closure so retry can call without re-uploading

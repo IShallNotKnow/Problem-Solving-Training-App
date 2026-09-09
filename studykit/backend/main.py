@@ -503,13 +503,19 @@ async def upload(
     if not combined_content:
         raise HTTPException(status_code=422, detail="No meaningful content could be extracted.")
 
-    generation_input_id = await session_store.store_upload_context(
-        study_set_id=study_set_id,
-        content=combined_content,
-        raw_markdown=combined_markdown,
-        pdf_path=pdf_path,
-        stored_images=stored_images,
-    )
+    if pdf_path:
+        generation_input_id = await session_store.store_upload_context(
+            study_set_id=study_set_id,
+            content=combined_content,
+            raw_markdown=combined_markdown,
+            pdf_path=pdf_path,
+            stored_images=stored_images,
+        )
+    else:
+        await session_store.store_text_context(
+            study_set_id=study_set_id,
+            text=combined_content,
+        )
     logger.info(f"[endpoint] upload complete for session {session_id}, study_set={study_set_id}")
 
     return UploadResponse(

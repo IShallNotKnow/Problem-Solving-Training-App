@@ -235,6 +235,14 @@ class SessionStore:
             .eq("session_id", str(session_id))
             .execute()
         )
+
+        await self.store_upload_context(
+            study_set_id=study_set_id,
+            content=label,
+            raw_markdown=label,
+            pdf_path="",
+            stored_images=[],
+        )
         logger.info(f"[session] study set {study_set_id} added to session row")
         return study_set_id
 
@@ -359,6 +367,31 @@ class SessionStore:
             )
         logger.info(f"[session] upload context stored, generation_input_id={generation_input_id}")
         return generation_input_id
+
+    async def store_text_context(
+        self,
+        study_set_id: UUID,
+        text: str,
+    ) -> UUID:
+        logger.info(
+            f"[session] storing text context for study set {study_set_id}, "
+            f"content={len(text)} chars"
+        )
+        res = await (
+            self.db.table("generation_inputs")
+                .insert(
+                    {
+                        "study_set_id": str(study_set_id),
+                        "content": text,
+                        "raw_markdown": text,
+                        "pdf_path": None,
+                        "questions_generated": False,
+                    }
+                )
+                .select("generation_input_id")
+                .execute()
+        )
+        return UUID(res.data[0]["generation_input_id"])
 
     async def get_upload_context(self, study_set_id: UUID) -> dict | None:
         logger.debug(f"[session] fetching upload context for study set {study_set_id}")

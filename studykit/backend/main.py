@@ -512,7 +512,7 @@ async def upload(
             stored_images=stored_images,
         )
     else:
-        await session_store.store_text_context(
+        generation_input_id = await session_store.store_text_context(
             study_set_id=study_set_id,
             text=combined_content,
         )

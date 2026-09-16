@@ -4,6 +4,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from response_helpers import _normalize_topic_key
 
 # ---------------------------------------------------------------------------
 # Models
@@ -66,6 +67,17 @@ class Question(BaseModel):
             if self.choices:
                 raise ValueError(f"{self.question_id}: FRQ should not have choices")
         return self
+
+    @field_validator("topic_difficulties", mode="before")
+    @classmethod
+    def normalize_topic_keys(cls, v):
+        if isinstance(v, dict):
+            return {_normalize_topic_key(k): val for k, val in v.items()}
+        return v
+
+
+class QuestionBatch(BaseModel):
+    questions: list[Question]
 
 
 class SessionQuestion(BaseModel):

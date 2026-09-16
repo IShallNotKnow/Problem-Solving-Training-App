@@ -23,6 +23,7 @@ dependencies = [
     "valkey[libvalkey]==6.1.1",
     "arq==0.28.0",
     "requests>=2.34.2",
+    "instructor>=1.17.0",
 ]
 
 [project.optional-dependencies]

@@ -379,17 +379,17 @@ class SessionStore:
         )
         res = await (
             self.db.table("generation_inputs")
-                .insert(
-                    {
-                        "study_set_id": str(study_set_id),
-                        "content": text,
-                        "raw_markdown": text,
-                        "pdf_path": None,
-                        "questions_generated": False,
-                    }
-                )
-                .select("generation_input_id")
-                .execute()
+            .insert(
+                {
+                    "study_set_id": str(study_set_id),
+                    "content": text,
+                    "raw_markdown": text,
+                    "pdf_path": None,
+                    "questions_generated": False,
+                }
+            )
+            .select("generation_input_id")
+            .execute()
         )
         return UUID(res.data[0]["generation_input_id"])
 

@@ -7,7 +7,6 @@ from openai import AsyncOpenAI, BadRequestError
 from valkey.asyncio import Valkey
 
 from config import settings
-from fastapi import HTTPException
 from exceptions import DatabaseError, SessionNotFoundError
 from models import GenerationResult, Question, QuestionDTO
 from processing import QuestionGenerator
@@ -86,14 +85,14 @@ async def generate_questions_task(ctx, session_id: str, job: dict):
         raw_images = await storage_manager.list_images(state.study_set_id)
         upload_context = await session_store.get_upload_context(state.study_set_id)
         if upload_context is None:
-            raise ValueError("No upload context found — this should have been caught at the API level")
+            raise ValueError(
+                "No upload context found — this should have been caught at the API level"
+            )
 
         recent_misconceptions = await session_store.get_recent_misconceptions(session_id=ss_id)
 
         content = upload_context["content"]
-        generation_input_id = (
-            UUID(upload_context["generation_input_id"])
-        )
+        generation_input_id = UUID(upload_context["generation_input_id"])
 
         await valkey.set(f"job_status:{session_id}", "in_progress", ex=600)
 

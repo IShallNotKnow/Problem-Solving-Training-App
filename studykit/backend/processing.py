@@ -2,26 +2,21 @@ import asyncio
 import base64
 import json
 import logging
-import instructor
-
 from collections.abc import AsyncGenerator
 from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
+import instructor
 from dotenv import load_dotenv
 from fastapi import HTTPException
 from llama_cloud import AsyncLlamaCloud
 from openai import AsyncOpenAI, BadRequestError
-from pydantic import ValidationError
-
-from response_helpers import _parse_tool_call, _parse_text, _normalize_topic_key, _summarize_validation_error, log_invalid_prompt
 
 from config import settings
 from models import (
     ANSWER_VALIDATION_TOOL,
     IMAGE_FILTERING_TOOL,
-    QUESTION_GENERATION_TOOL,
     QUESTION_VALIDATION_TOOL,
     AnswerValidationResult,
     GenerationResult,
@@ -32,7 +27,12 @@ from models import (
     SessionContext,
     SessionState,
     TopicResult,
-    QuestionBatch,
+)
+from response_helpers import (
+    _normalize_topic_key,
+    _parse_text,
+    _parse_tool_call,
+    log_invalid_prompt,
 )
 from storage import StorageManager
 
@@ -525,8 +525,8 @@ class QuestionGenerator:
         }
 
     def _build_system_prompt(
-        self, 
-        topic_profile: dict | None = None, 
+        self,
+        topic_profile: dict | None = None,
         recent_misconceptions: dict | None = None,
     ) -> str:
         misconceptions_instruction = ""
@@ -724,7 +724,7 @@ respond.
             f"[generator] prompt built: {images_included} images included, {images_description_fallback} description fallbacks, ~{image_token_budget} image tokens"
         )
         return base_user_content, retry_user_content
-        
+
     async def _process_outputs(
         self,
         content,
@@ -746,7 +746,9 @@ respond.
                 logger.warning(f"[generator] question {q.question_id} already approved, skipping")
                 continue
             if q.question_id in seen_ids:
-                logger.warning(f"[generator] duplicate question_id {q.question_id} in batch, skipping")
+                logger.warning(
+                    f"[generator] duplicate question_id {q.question_id} in batch, skipping"
+                )
                 continue
             seen_ids.add(q.question_id)
             deduplicated.append(q)
@@ -815,7 +817,7 @@ respond.
         logger.info(
             f"[generator] end of attempt processing: {current_mcq} MCQ + {current_frq} FRQ approved so far"
         )
-        return new_validation + synthetic_rejections, this_round_feedback, newly_approved     
+        return new_validation + synthetic_rejections, this_round_feedback, newly_approved
 
     async def generate_questions(
         self,
@@ -859,9 +861,7 @@ respond.
             )
 
             current_user_content = (
-                base_user_content.copy()
-                if not approved_questions
-                else retry_user_content.copy()
+                base_user_content.copy() if not approved_questions else retry_user_content.copy()
             )
 
             if feedback_history:
@@ -921,7 +921,9 @@ respond.
                 except BadRequestError as e:
                     if log_invalid_prompt(e, "generator", request_messages):
                         if any(b.get("type") == "image_url" for b in current_user_content):
-                            logger.warning("[generator] retrying without images after invalid_prompt")
+                            logger.warning(
+                                "[generator] retrying without images after invalid_prompt"
+                            )
                     await approval_queue.put(e)  # propagate error through to main loop
                 except instructor.exceptions.InstructorRetryException as e:
                     await approval_queue.put(e)
@@ -936,9 +938,17 @@ respond.
                         if question is None:
                             # stream ended, flush remainder
                             if batch:
-                                combined_validation, round_feedback, newly_approved = await self._process_outputs(
-                                    content, raw_images, batch, approved_questions,
-                                    TARGET_MCQ=TARGET_MCQ, TARGET_FRQ=TARGET_FRQ
+                                (
+                                    combined_validation,
+                                    round_feedback,
+                                    newly_approved,
+                                ) = await self._process_outputs(
+                                    content,
+                                    raw_images,
+                                    batch,
+                                    approved_questions,
+                                    TARGET_MCQ=TARGET_MCQ,
+                                    TARGET_FRQ=TARGET_FRQ,
                                 )
                                 feedback_history.update(round_feedback)
                                 existing = {r.question_id: r for r in validation}
@@ -950,9 +960,17 @@ respond.
                             break
                         batch.append(question)
                         if len(batch) >= BATCH_SIZE:
-                            combined_validation, round_feedback, newly_approved = await self._process_outputs(
-                                content, raw_images, batch, approved_questions,
-                                TARGET_MCQ=TARGET_MCQ, TARGET_FRQ=TARGET_FRQ
+                            (
+                                combined_validation,
+                                round_feedback,
+                                newly_approved,
+                            ) = await self._process_outputs(
+                                content,
+                                raw_images,
+                                batch,
+                                approved_questions,
+                                TARGET_MCQ=TARGET_MCQ,
+                                TARGET_FRQ=TARGET_FRQ,
                             )
                             feedback_history.update(round_feedback)
                             existing = {r.question_id: r for r in validation}
@@ -987,9 +1005,11 @@ respond.
                     yield item
 
                 await asyncio.gather(producer_task, validator_task)
-                logger.info(f"[generator] model returned {questions_this_attempt} questions this attempt")
+                logger.info(
+                    f"[generator] model returned {questions_this_attempt} questions this attempt"
+                )
 
-            except Exception as e:
+            except Exception:
                 producer_task.cancel()
                 validator_task.cancel()
                 await asyncio.gather(producer_task, validator_task, return_exceptions=True)

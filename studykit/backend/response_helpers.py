@@ -1,10 +1,10 @@
-import unicodedata
-import re
 import json
+import logging
+import re
+import unicodedata
 
 from openai import BadRequestError
 from pydantic import ValidationError
-import logging
 
 logging.basicConfig(
     level=logging.INFO,

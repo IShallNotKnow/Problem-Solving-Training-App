@@ -4,6 +4,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
 from response_helpers import _normalize_topic_key
 
 # ---------------------------------------------------------------------------

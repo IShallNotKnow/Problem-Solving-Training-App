@@ -834,7 +834,7 @@ respond.
 
         SYSTEM_PROMPT = self._build_system_prompt(topic_profile, recent_misconceptions)
         base_user_content, retry_user_content = await self._build_question_context(
-            content, raw_images, storage_manager, study_set_id
+            content, study_set_id, storage_manager, raw_images
         )
 
         MAX_RETRIES = 3

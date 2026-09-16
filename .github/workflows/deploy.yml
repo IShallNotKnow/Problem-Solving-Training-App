@@ -77,4 +77,4 @@ jobs:
         run: npm run build
 
       - name: Deploy Artifacts to Vercel
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        run: vercel deploy --prod --token="$VERCEL_TOKEN"

@@ -925,7 +925,7 @@ respond.
                                 "[generator] retrying without images after invalid_prompt"
                             )
                     await approval_queue.put(e)  # propagate error through to main loop
-                except instructor.exceptions.InstructorRetryException as e:
+                except instructor.core.exceptions.InstructorRetryException as e:
                     await approval_queue.put(e)
                 finally:
                     await validation_queue.put(None)  # always sentinel
@@ -996,7 +996,7 @@ respond.
                             base_user_content = retry_user_content
                         attempts += 1
                         continue
-                    if isinstance(item, instructor.exceptions.InstructorRetryException):
+                    if isinstance(item, instructor.core.exceptions.InstructorRetryException):
                         feedback_history = {
                             "__no_tool_call": "Previous response was unparseable — ensure all fields satisfy the field contract"
                         }

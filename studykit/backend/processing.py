@@ -8,9 +8,9 @@ from uuid import UUID
 
 import httpx
 import instructor
-from instructor.core import InstructorRetryException
 from dotenv import load_dotenv
 from fastapi import HTTPException
+from instructor.core import InstructorRetryException
 from llama_cloud import AsyncLlamaCloud
 from openai import AsyncOpenAI, BadRequestError
 
@@ -901,7 +901,7 @@ respond.
                 {"role": "user", "content": current_user_content},
             ]
 
-            validation_queue: asyncio.Queue[Question | None] = asyncio.Queue()
+            validation_queue: asyncio.Queue[Question | None] = asyncio.Queue
             approval_queue: asyncio.Queue[Question | None] = asyncio.Queue()
             questions_this_attempt = 0
 
@@ -910,7 +910,7 @@ respond.
                 try:
                     async for question in self.client.chat.completions.create_iterable(
                         model=MODEL,
-                        max_tokens=15000,
+                        max_completion_tokens=15000,
                         response_model=Question,
                         messages=request_messages,
                     ):
@@ -952,10 +952,7 @@ respond.
                                     TARGET_FRQ=TARGET_FRQ,
                                 )
                                 feedback_history.update(round_feedback)
-                                existing = {r.question_id: r for r in validation}
-                                for r in combined_validation:
-                                    existing[r.question_id] = r
-                                validation[:] = list(existing.values())
+                                validation.extend(combined_validation)
                                 for q in newly_approved:
                                     await approval_queue.put(q)
                             break
@@ -974,10 +971,7 @@ respond.
                                 TARGET_FRQ=TARGET_FRQ,
                             )
                             feedback_history.update(round_feedback)
-                            existing = {r.question_id: r for r in validation}
-                            for r in combined_validation:
-                                existing[r.question_id] = r
-                            validation[:] = list(existing.values())
+                            validation.extend(combined_validation)
                             for q in newly_approved:
                                 await approval_queue.put(q)
                             batch.clear()

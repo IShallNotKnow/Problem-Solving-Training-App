@@ -901,7 +901,7 @@ respond.
                 {"role": "user", "content": current_user_content},
             ]
 
-            validation_queue: asyncio.Queue[Question | None] = asyncio.Queue
+            validation_queue: asyncio.Queue[Question | None] = asyncio.Queue()
             approval_queue: asyncio.Queue[Question | None] = asyncio.Queue()
             questions_this_attempt = 0
 

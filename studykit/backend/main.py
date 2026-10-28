@@ -480,7 +480,7 @@ async def upload(
 
         markdown, items, images = await pdf_processor.extract(pdf_bytes)
         filtered_images = await image_filter.heuristic_filter(images)
-        filtered_images, descriptions = await image_filter.semantic_filter(filtered_images)
+        filtered_images, descriptions = await image_filter.semantic_filter(filtered_images, markdown)
         filtered_items = await text_filter.item_filter(items)
         scored_pages = await concept_extractor.score_pages(filtered_items)
         pdf_content = await concept_extractor.prioritize_content(filtered_items, scored_pages) or ""

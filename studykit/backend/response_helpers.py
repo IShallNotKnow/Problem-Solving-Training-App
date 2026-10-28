@@ -25,6 +25,16 @@ def _parse_tool_call(message) -> dict:
         raise ValueError("Model did not return a tool call.")
     return json.loads(tool_calls[0].function.arguments)
 
+def _parse_responses_tool_call(message) -> dict:
+    """Extract and JSON-parse the first function call from an OpenAI responses API output."""
+    tool_call = next(
+        (item for item in message.output if item.type == "function_call"),
+        None
+    )
+    if tool_call is None:
+        raise ValueError("Model did not return a tool call.")
+    return json.loads(tool_call.arguments)
+
 
 def log_invalid_prompt(exc: BadRequestError, call_site: str, messages: list) -> bool:
     """Log actionable detail when OpenAI rejects a prompt as policy-violating.

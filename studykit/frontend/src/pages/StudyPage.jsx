@@ -10,6 +10,53 @@ import { IoSend } from 'react-icons/io5';
 import { Switch } from 'antd';
 import './StudyPage.css';
 
+// ── state enums ───────────────────────────────────────────────
+// Module-level so they're created once (STATUS used to be re-created every render).
+
+/** What the page is showing / what the input box does. */
+const MODE = Object.freeze({
+    IDLE: 'idle',           // no questions yet — input uploads material
+    LOADING: 'loading',     // every received question answered, more still streaming in
+    ANSWER: 'answer',       // answering the current question
+    CHAT: 'chat',           // free-form chat about the material
+    COMPLETE: 'complete',   // every question answered, nothing more coming
+});
+
+/** Lifecycle of the initial session fetch. Replaces `sessionLoading` (bool). */
+const SESSION_STATUS = Object.freeze({
+    LOADING: 'loading',
+    READY: 'ready',
+    ERROR: 'error',
+});
+
+/** What the page is currently waiting on. Replaces `loading` (bool). */
+const ACTIVITY = Object.freeze({
+    NONE: 'none',
+    UPLOADING: 'uploading',
+    GENERATING: 'generating',
+    SUBMITTING_ANSWER: 'submitting_answer',
+    SENDING_CHAT: 'sending_chat',
+    RESETTING: 'resetting',
+});
+
+/**
+ * State of a question-generation job. Replaces `generationComplete` (bool) and
+ * the per-message `partial` flag (bool), which conflated "still streaming"
+ * with "finished but some questions failed validation".
+ * IDLE = not generating (never started, reset, or the stream ended early).
+ */
+const GENERATION = Object.freeze({
+    IDLE: 'idle',
+    STREAMING: 'streaming',
+    COMPLETE: 'complete',
+    FAILED_VALIDATION: 'failed_validation',
+});
+
+// After the last loaded question is answered: wait only if the stream is
+// still open and may deliver more; otherwise the session is done.
+const modeAfterLastQuestion = (generationStatus) =>
+    generationStatus === GENERATION.STREAMING ? MODE.LOADING : MODE.COMPLETE;
+
 export default function StudyPage() {
     const { sessionId } = useParams();
     const navigate = useNavigate();
@@ -18,15 +65,18 @@ export default function StudyPage() {
 
     const [sessionState, setSessionState] = useState(null);
     const [messages, setMessages] = useState([]);
-    const [mode, setMode] = useState('idle'); // 'idle' | 'answer' | 'chat' | 'complete'
+    const [mode, setMode] = useState(MODE.IDLE);
     const [inputText, setInputText] = useState('');
     const [inputError, setInputError] = useState(null);
     const [file, setFile] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [sessionLoading, setSessionLoading] = useState(true);
-    const [sessionError, setSessionError] = useState(null);       // full page error state
+    const [activity, setActivity] = useState(ACTIVITY.NONE);
+    const [sessionStatus, setSessionStatus] = useState(SESSION_STATUS.LOADING);
+    const [sessionError, setSessionError] = useState(null);       // message shown when sessionStatus === ERROR
     const [retryError, setRetryError] = useState(null);           // retry banner error
-    const [generationComplete, setGenerationComplete] = useState(false);
+    const [generationStatus, setGenerationStatus] = useState(GENERATION.IDLE);
+
+    // Binary view of `activity` for the many "disable while busy" checks.
+    const isBusy = activity !== ACTIVITY.NONE;
 
     const inputRef = useRef(null);
     const controllerRef = useRef(null);
@@ -65,26 +115,28 @@ export default function StudyPage() {
                 const position = state?.current_position ?? 0;
 
                 if (loadedQuestions.length === 0) {
-                    setMode('idle');
+                    setMode(MODE.IDLE);
                 } else if (position >= loadedQuestions.length) {
-                    if (generationComplete) {
-                        setMode('complete');
-                    } else {
-                        setMode('loading');
-                    }
+                    setMode(modeAfterLastQuestion(generationStatus));
                 } else {
-                    setMode('answer');
+                    setMode(MODE.ANSWER);
                 }
 
+                setSessionStatus(SESSION_STATUS.READY);
             } catch (err) {
-                if (err.status === 404) return;
+                if (err.status === 404) {
+                    // Unchanged from before: a 404 skips the error screen and
+                    // renders the normal shell.
+                    setSessionStatus(SESSION_STATUS.READY);
+                    return;
+                }
                 setSessionError(
                     err.status === 403
                         ? "You don't have access to this session."
                         : 'Could not load this session. Please try again.'
                 );
+                setSessionStatus(SESSION_STATUS.ERROR);
             } finally {
-                setSessionLoading(false);
                 scrollToBottom();
             }
         };
@@ -100,7 +152,7 @@ export default function StudyPage() {
     const handleModeToggle = (newMode) => {
         const questions = sessionState?.questions;
         const index = sessionState?.current_position;
-        if (newMode === 'answer' && (!questions?.length || index >= questions.length)) return;
+        if (newMode === MODE.ANSWER && (!questions?.length || index >= questions.length)) return;
         setMode(newMode);
     };
 
@@ -119,7 +171,7 @@ export default function StudyPage() {
         setFile(null);
         setRetryError(null);
         if (inputRef.current) inputRef.current.value = '';
-        setLoading(true);
+        setActivity(ACTIVITY.UPLOADING);
 
         if (currentFile) {
             try {
@@ -132,7 +184,7 @@ export default function StudyPage() {
                     formData
                 );
             } catch (err) {
-                setLoading(false);
+                setActivity(ACTIVITY.NONE);
                 setRetryError({
                     message: 'Upload failed — please try again.',
                     onRetry: () => { setRetryError(null); handleUploadAndGenerate(); },
@@ -145,7 +197,7 @@ export default function StudyPage() {
                 formData.append('raw_markdown', currentInput);
                 await apiUpload(`/sessions/${sessionId}/upload`, formData);
             } catch (err) {
-                setLoading(false);
+                setActivity(ACTIVITY.NONE);
                 setRetryError({
                     message: 'Upload failed — please try again.',
                     onRetry: () => { setRetryError(null); handleUploadAndGenerate(); },
@@ -160,7 +212,7 @@ export default function StudyPage() {
 
     const handleGenerate = async (sessionId, label, rawMarkdown) => {
         console.log('[generate] handleGenerate called', { sessionId });
-        
+
         // Abort any existing stream
         if (controllerRef.current) {
             console.log('[generate] aborting existing stream before new generation');
@@ -168,7 +220,7 @@ export default function StudyPage() {
             controllerRef.current = null;
         }
 
-        setLoading(true);
+        setActivity(ACTIVITY.GENERATING);
         setRetryError(null);
 
         try {
@@ -202,19 +254,25 @@ export default function StudyPage() {
                 },
             });
         } finally {
-            setLoading(false);
+            setActivity(ACTIVITY.NONE);
+            // Stream is over. If it never reached job_complete (error / drop),
+            // we're no longer generating; and if the user was parked waiting
+            // for more questions, nothing more is coming.
+            setGenerationStatus(prev => prev === GENERATION.STREAMING ? GENERATION.IDLE : prev);
+            setMode(prev => prev === MODE.LOADING ? MODE.COMPLETE : prev);
             scrollToBottom();
         }
     };
 
     const streamGeneration = (sessionId, token, label, rawMarkdown) => {
         console.log('[stream] streamGeneration called', { sessionId });
-        
+
         return new Promise((resolve, reject) => {
             const questions = [];
             const controller = new AbortController();
             controllerRef.current = controller;
 
+            setGenerationStatus(GENERATION.STREAMING);
             console.log('[stream] opening fetchEventSource');
 
             fetchEventSource(
@@ -235,13 +293,13 @@ export default function StudyPage() {
                 onmessage(e) {
                     console.log('[stream] onmessage', { event: e.event, dataLength: e.data?.length });
                     if (e.event === 'heartbeat') { return; }
-                    
+
                     else if (e.event === 'question_approved') {
                         const question = JSON.parse(e.data);
                         questions.push(question);
-                        console.log('[stream] question received', { 
-                            question_id: question.question_id, 
-                            total: questions.length 
+                        console.log('[stream] question received', {
+                            question_id: question.question_id,
+                            total: questions.length
                         });
 
                         setSessionState(prev => ({
@@ -249,16 +307,16 @@ export default function StudyPage() {
                             questions: [...prev.questions, question],
                         }));
 
-                        setMode(prev => prev === 'loading' ? 'answer' : prev);
+                        setMode(prev => prev === MODE.LOADING ? MODE.ANSWER : prev);
 
                         if (questions.length === 1) {
                             setMessages(prev => [...prev, {
                                 role: 'assistant',
                                 content: questions,
                                 type: 'questions',
-                                partial: true,
+                                generation: GENERATION.STREAMING,
                             }]);
-                            setMode('answer');
+                            setMode(MODE.ANSWER);
                         } else {
                             setMessages(prev => prev.map(msg =>
                                 msg.type === 'questions'
@@ -269,11 +327,14 @@ export default function StudyPage() {
 
                     } else if (e.event === 'job_complete') {
                         console.log('[stream] job_complete received', { questionsReceived: questions.length });
-                        setGenerationComplete(true);
                         const { status } = JSON.parse(e.data);
+                        const finalStatus = status === 'failed_validation'
+                            ? GENERATION.FAILED_VALIDATION
+                            : GENERATION.COMPLETE;
+                        setGenerationStatus(finalStatus);
 
                         if (questions.length === 0) {
-                            setMode('idle');
+                            setMode(MODE.IDLE);
                             setRetryError({
                                 message: "Couldn't build questions from this material.",
                                 onRetry: () => {
@@ -284,7 +345,7 @@ export default function StudyPage() {
                         } else {
                             setMessages(prev => prev.map(msg =>
                                 msg.type === 'questions'
-                                    ? { ...msg, content: [...questions], partial: status === 'failed_validation' }
+                                    ? { ...msg, content: [...questions], generation: finalStatus }
                                     : msg
                             ));
                         }
@@ -296,8 +357,8 @@ export default function StudyPage() {
                 },
 
                 onerror(err) {
-                    console.error('[stream] onerror', { 
-                        name: err?.name, 
+                    console.error('[stream] onerror', {
+                        name: err?.name,
                         message: err?.message,
                         aborted: controller.signal.aborted,
                         questionsReceived: questions.length,
@@ -322,7 +383,7 @@ export default function StudyPage() {
     const resetSessionState = async () => {
         await apiFetch(`/sessions/${sessionId}/reset`, { method: 'POST' });
         setMessages([]);
-        setGenerationComplete(false);
+        setGenerationStatus(GENERATION.IDLE);
         setSessionState(prev => ({
             ...prev,
             questions: [],
@@ -335,7 +396,8 @@ export default function StudyPage() {
             toast.error('No study material to regenerate from.');
             return;
         }
-        setLoading(true);
+        // The reset is part of regenerating, so the whole thing reads as GENERATING.
+        setActivity(ACTIVITY.GENERATING);
         try {
             await resetSessionState();
             await handleGenerate(sessionId, sessionState?.label ?? 'Study set', guidanceText);
@@ -344,24 +406,24 @@ export default function StudyPage() {
                 ? err.message
                 : 'Could not reset this session — please try again.');
         } finally {
-            setLoading(false);
+            setActivity(ACTIVITY.NONE);
         }
     };
 
     const handleAddMaterial = async () => {
-        setLoading(true);
+        setActivity(ACTIVITY.RESETTING);
         try {
             await resetSessionState();
-            setMode('idle');
+            setMode(MODE.IDLE);
         } catch (err) {
             toast.error('Could not reset this session — please try again.');
         } finally {
-            setLoading(false);
+            setActivity(ACTIVITY.NONE);
         }
     };
 
     // ── answer ────────────────────────────────────────────────
-    
+
 
     const handleAnswer = async (choiceIndex = null) => {
         const currentInput = inputText;
@@ -386,7 +448,7 @@ export default function StudyPage() {
         }
 
         setInputText('');
-        setLoading(true);
+        setActivity(ACTIVITY.SUBMITTING_ANSWER);
 
         try {
             const body = {
@@ -417,16 +479,12 @@ export default function StudyPage() {
                     ...prev,
                     current_position: nextIndex,
                 }));
-            } else if (nextIndex >= total) {
-                if (generationComplete) {
-                    setMode('complete');
-                } else {
-                    // more questions still coming — wait
-                    setMode('loading');
-                }
+            } else {
+                // Last loaded question answered: wait if more are still
+                // streaming in, otherwise we're done.
+                setMode(modeAfterLastQuestion(generationStatus));
             }
 
-            
         } catch (err) {
             setMessages(prev => [...prev, {
                 role: 'assistant',
@@ -437,7 +495,7 @@ export default function StudyPage() {
                 type: 'error',
             }]);
         } finally {
-            setLoading(false);
+            setActivity(ACTIVITY.NONE);
             scrollToBottom();
         }
     };
@@ -448,7 +506,7 @@ export default function StudyPage() {
 
         setMessages(prev => [...prev, { role: 'user', content: currentInput }]);
         setInputText('');
-        setLoading(true);
+        setActivity(ACTIVITY.SENDING_CHAT);
 
         try {
             const data = await apiFetch(`/sessions/${sessionId}/chat`, {
@@ -471,18 +529,18 @@ export default function StudyPage() {
                 type: 'error',
             }]);
         } finally {
-            setLoading(false);
+            setActivity(ACTIVITY.NONE);
             scrollToBottom();
         }
     };
 
     // ── send router ───────────────────────────────────────────
     const validateInput = (text, currentMode) => {
-        if (currentMode === 'answer' && currentQuestion?.question_type !== 'MCQ') {
+        if (currentMode === MODE.ANSWER && currentQuestion?.question_type !== 'MCQ') {
             if (!text.trim()) return 'Answer cannot be empty';
             if (text.trim().length < 3) return 'Answer is too short';
         }
-        if (currentMode === 'chat') {
+        if (currentMode === MODE.CHAT) {
             if (!text.trim()) return 'Message cannot be empty';
         }
         return null;
@@ -491,7 +549,7 @@ export default function StudyPage() {
     const handleSend = async () => {
         if (!inputText.trim() && !file) return;
 
-        if (mode === 'answer' || mode === 'chat') {
+        if (mode === MODE.ANSWER || mode === MODE.CHAT) {
             const error = validateInput(inputText, mode);
             if (error) {
                 setInputError(error);
@@ -501,9 +559,9 @@ export default function StudyPage() {
 
         setInputError(null);
 
-        if (file || mode === 'idle') {
+        if (file || mode === MODE.IDLE) {
             await handleUploadAndGenerate();
-        } else if (mode === 'answer') {
+        } else if (mode === MODE.ANSWER) {
             await handleAnswer();
         } else {
             await handleChat();
@@ -513,7 +571,7 @@ export default function StudyPage() {
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (!loading) handleSend();
+            if (!isBusy) handleSend();
         }
     };
 
@@ -530,24 +588,24 @@ export default function StudyPage() {
     const currentQuestion = hasActiveQuestions
         ? questions[sessionState.current_position]
         : null;
-    
+
     const isMcqAnswerMode =
-        mode === 'answer' &&
+        mode === MODE.ANSWER &&
         currentQuestion?.question_type === 'MCQ';
 
     const sessionTitle = sessionState?.label || 'New session';
 
     const placeholder =
-        mode === 'answer' && currentQuestion
+        mode === MODE.ANSWER && currentQuestion
             ? currentQuestion.question_type === 'MCQ'
                 ? ''
                 : `Answer Q${sessionState.current_position + 1}...`
-            : mode === 'chat'
+            : mode === MODE.CHAT
             ? 'Ask studykit anything...'
             : 'Paste notes or attach a file to get started...';
 
     // ── full page loading ─────────────────────────────────────
-    if (sessionLoading) {
+    if (sessionStatus === SESSION_STATUS.LOADING) {
         return (
             <div className="sp-wrap sp-loading-screen">
                 <div className="sp-loading">
@@ -558,7 +616,7 @@ export default function StudyPage() {
     }
 
     // ── full page error (403, 500, unrecoverable) ─────────────
-    if (sessionError) {
+    if (sessionStatus === SESSION_STATUS.ERROR) {
         return (
             <div className="sp-wrap sp-error-screen">
                 <div className="sp-error-state">
@@ -653,7 +711,7 @@ export default function StudyPage() {
                                                         ? 'No questions could be generated from this material.'
                                                         : `${qs.length} question${qs.length === 1 ? '' : 's'} generated — starting below.`}
                                                 </p>
-                                                {msg.partial && qs.length > 0 && (
+                                                {msg.generation === GENERATION.FAILED_VALIDATION && qs.length > 0 && (
                                                     <p className="sp-questions-partial">
                                                         Some questions didn’t pass quality checks, so this set is shorter than usual.
                                                     </p>
@@ -704,7 +762,7 @@ export default function StudyPage() {
                     ))}
 
                     {/* ── current question card ── */}
-                    {currentQuestion && mode === 'answer' && (
+                    {currentQuestion && mode === MODE.ANSWER && (
                         <div className="sp-question-card">
                             <div className="sp-question-card-header">
                                 <span className="sp-question-num">
@@ -725,7 +783,7 @@ export default function StudyPage() {
                                             key={ci}
                                             type="button"
                                             className="sp-choice"
-                                            disabled={loading}
+                                            disabled={isBusy}
                                             onClick={() => handleAnswer(ci)}
                                         >
                                             <span className="sp-choice-letter">
@@ -745,7 +803,7 @@ export default function StudyPage() {
                         </div>
                     )}
 
-                    {loading && (
+                    {isBusy && (
                         <div className="sp-message sp-message--assistant">
                             <div className="sp-message-bubble">
                                 <div className="sp-loading">
@@ -771,9 +829,9 @@ export default function StudyPage() {
                             <button
                                 className="sp-retry-btn"
                                 onClick={retryError.onRetry}
-                                disabled={loading}
+                                disabled={isBusy}
                             >
-                                {loading ? 'Retrying...' : 'Retry'}
+                                {isBusy ? 'Retrying...' : 'Retry'}
                             </button>
                             <button
                                 className="sp-retry-dismiss"
@@ -788,7 +846,7 @@ export default function StudyPage() {
             )}
 
             {/* ── completion banner or input ── */}
-            {mode === 'complete' ? (
+            {mode === MODE.COMPLETE ? (
                 <div className="sp-completion-banner">
                     <div className="sp-completion-banner-inner">
                         {/* Show summary only when there are answered questions */}
@@ -819,16 +877,16 @@ export default function StudyPage() {
                                         const guidance = document.getElementById('regenerate-guidance')?.value ?? '';
                                         handleRegenerate(guidance);
                                     }}
-                                    disabled={loading}
+                                    disabled={isBusy}
                                 >
-                                    {loading ? 'Generating...' : 'Regenerate questions'}
+                                    {activity === ACTIVITY.GENERATING ? 'Generating...' : 'Regenerate questions'}
                                 </button>
 
                                 {/* upload new material — drops to idle for upload flow */}
                                 <button
                                     className="sp-completion-btn--secondary"
                                     onClick={() => handleAddMaterial()}
-                                    disabled={loading}
+                                    disabled={isBusy}
                                 >
                                     Add new material
                                 </button>
@@ -845,10 +903,10 @@ export default function StudyPage() {
                     {hasActiveQuestions && (
                         <div className="sp-toggle-row">
                             <Switch
-                                checked={mode === 'chat'}
+                                checked={mode === MODE.CHAT}
                                 checkedChildren="💬 Chat"
                                 unCheckedChildren="📝 Answer"
-                                onChange={(checked) => handleModeToggle(checked ? 'chat' : 'answer')}
+                                onChange={(checked) => handleModeToggle(checked ? MODE.CHAT : MODE.ANSWER)}
                             />
                         </div>
                     )}
@@ -875,7 +933,7 @@ export default function StudyPage() {
                         )}
 
                         <div className="sp-input-row">
-                            {mode === 'idle' && (
+                            {mode === MODE.IDLE && (
                                 <button
                                     className="sp-attach-btn"
                                     type="button"
@@ -898,14 +956,14 @@ export default function StudyPage() {
                                         onKeyDown={handleKeyDown}
                                         placeholder={placeholder}
                                         rows={1}
-                                        disabled={loading}
+                                        disabled={isBusy}
                                     />
 
                                     <button
                                         className="sp-send-btn"
                                         type="button"
                                         onClick={handleSend}
-                                        disabled={(!inputText.trim() && !file) || loading}
+                                        disabled={(!inputText.trim() && !file) || isBusy}
                                     >
                                         <IoSend size={18} />
                                     </button>
@@ -919,7 +977,7 @@ export default function StudyPage() {
                     )}
 
                     <div className="sp-input-hint">
-                        {mode === 'answer'
+                        {mode === MODE.ANSWER
                             ? currentQuestion?.question_type === 'MCQ'
                                 ? 'Select an answer above · Switch to Chat for hints'
                                 : 'Enter to submit answer · Shift+Enter for new line'
